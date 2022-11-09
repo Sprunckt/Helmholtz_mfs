@@ -1,9 +1,10 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.special import hankel1
-from scipy.fft import irfft, rfft
-from utils import plot_complex, rectangle, polygon
-import pyroomacoustics as pra
+from utils import plot_complex, sample_rectangle, sample_polygon, out_polygon
+from shapely.geometry import Point, Polygon
+from sklearn.linear_model import Lasso
+
 
 c = 343
 
@@ -104,24 +105,90 @@ def solve(beta, normvec, bound, boundv, source, k, source_type='dirac', cond='di
     return np.linalg.solve(A, b)
 
 
+def neumann_operator(bound, normvec, boundv, k):
+    """Compute the neumann operator at the boundary points given the virtual boundary points."""
+    diffs = bound[:, np.newaxis, :] - boundv[np.newaxis, :, :]
+    norms = np.linalg.norm(diffs, axis=-1)
+    return (np.sum(normvec[:, np.newaxis, :] * diffs, axis=-1) /  # (np, 2)*(np, np, 2) -> (np, np)
+                      norms * fundamental_solution_derivative(norms, k))
+
+
+def greedy_mfs_2d(poly, boundary, normvec, src_loc, b_operator, xmin, xmax, ymin, ymax, ngrid, k=2., niter=400,
+                  tol=1e-3, nkeep=1, min_dist=0., lam=1e-3):
+    if type(poly) is not Polygon:
+        poly = Polygon(poly)
+
+    src_loc = np.reshape(src_loc, (1, 2))
+
+    # cartesian intialization grid
+    gridx, gridy = np.meshgrid(np.linspace(xmin, xmax, ngrid), np.linspace(ymin, ymax, ngrid))
+    grid = np.stack([gridx.flatten(), gridy.flatten()], axis=1)
+    y = -np.reshape(b_operator(boundary, normvec, src_loc, k), -1)  # shape (nboundary,)
+    target = np.concatenate([np.real(y), np.imag(y)]).reshape(-1, 1)  # real vector for lasso fitting
+
+    res = y
+
+    not_inside = out_polygon(grid, poly, min_dist).reshape(ngrid, ngrid)
+    grid_outside = grid[not_inside.flatten(), :]
+
+    for i in range(niter):
+        # map gamma at each grid point
+        gamma_vec = b_operator(boundary, normvec, grid_outside, k)  # shape (nboundary, ninside**2)
+        eta_val = np.sum(np.real(np.conj(gamma_vec)*res[:, np.newaxis]), axis=0)  # value of eta at every grid point
+        gridval = np.zeros(ngrid**2)
+        gridval[not_inside.flatten()] = eta_val
+        if i == niter:
+            plt.imshow(gridval.reshape(ngrid, ngrid))
+            plt.colorbar()
+            plt.show()
+
+        if i == 0:
+            v_src = grid[not_inside.flatten()][np.argmax(eta_val)].reshape([1, -1])
+        else:
+            v_src = np.concatenate([v_src, grid[not_inside.flatten()][np.argmax(eta_val)].reshape([1, -1])], axis=0)
+
+        # todo : gridless search
+        # p = mp.Pool(8)  # todo: get number of cores
+        # optivals = p.map(opti_eta, bestvals)
+        # opti_ind, opti_val = 0, 0.
+        # for j, el in enumerate(optivals):
+        #     if el.fun > opti_val:
+        #         opti_ind, opti_val = j, el.fun
+        # v_src = np.concatenate([v_src, optivals[opti_ind].x], axis=0)
+        # optimize amplitudes
+
+        # shape (M, N, K) -> (J, K)
+        gamma_mat_cpx = b_operator(boundary, normvec, v_src, k)
+        gamma_mat = np.concatenate([np.real(gamma_mat_cpx), np.imag(gamma_mat_cpx)], axis=0)
+        lasso_fitter = Lasso(alpha=lam)
+        scale = np.sqrt(len(gamma_mat))  # rescaling factor for sklearn convention
+        lasso_fitter.fit(scale * gamma_mat, scale * target)
+        ampl = lasso_fitter.coef_.flatten()
+        res = y - np.dot(gamma_mat_cpx, ampl)
+        print(np.linalg.norm(res))
+
+    return v_src, ampl
+
+
 boundary_cond = "neumann"
 # boundary points
-npoints = 2000
+npoints = 200
 lx, ly = 3., 3.
-# bound, norm_vec = ellipse(npoints, 1, 2.)
-#bound, norm_vec = rectangle(npoints, lx, ly)
-#bound, norm_vec = polygon(npoints, np.array([[0, 0], [lx, 0], [lx, ly], [lx/2, ly], [lx/2, ly/2], [0, ly/2]]))
-bound, norm_vec = polygon(npoints, np.array([[0, 0], [lx, 0.], [lx, ly], [lx/2, ly/2], [0, ly]]))
+
+vertices = np.array([[0, 0], [lx, 0.], [lx, ly], [lx/2, ly/2], [0, ly]])
+poly = Polygon(vertices)
+#bound, norm_vec = sample_rectangle(npoints, lx, ly)
+#bound, norm_vec = sample_polygon(npoints, np.array([[0, 0], [lx, 0], [lx, ly], [lx/2, ly], [lx/2, ly/2], [0, ly/2]]))
+bound, norm_vec = sample_polygon(npoints, vertices)
 dx = 0.2
 
 # virtual boundary points
-#boundv, _ = rectangle(npoints, lx + dx, ly + dx, 0.02) - np.array([dx/2, dx/2])
+#boundv, _ = sample_rectangle(npoints, lx + dx, ly + dx, 0.02) - np.array([dx/2, dx/2])
 #boundv = translate_boundary(bound, norm_vec, 0.2)
-#boundv, _ = polygon(npoints, vertices=np.array([[-dx, -dx], [lx+dx, -dx], [lx+dx, ly+dx], [lx/2-dx, ly+dx],
+#boundv, _ = sample_polygon(npoints, vertices=np.array([[-dx, -dx], [lx+dx, -dx], [lx+dx, ly+dx], [lx/2-dx, ly+dx],
 #                                                [lx/2-dx, ly/2+dx], [-dx, ly/2+dx]]))
-boundv, _ = polygon(npoints,
-                    vertices=np.array([[-dx, -dx], [lx + dx, -dx], [lx + dx, ly + 2*dx], [lx / 2, ly/2 + dx],
-                                       [- dx, ly + 2*dx]]))
+boundv, _ = sample_polygon(npoints,vertices=np.array([[-dx, -dx], [lx + dx, -dx], [lx + dx, ly + 2*dx],
+                                                      [lx / 2, ly/2 + dx], [- dx, ly + 2*dx]]))
 
 beta = np.ones(len(bound), dtype=complex)*(6-6j)
 #pos_src = np.array([[2.5, 2.5]])
@@ -129,6 +196,9 @@ pos_src = np.array([[2.6, 2.]])
 
 f = 200
 tmax = 0.02
+
+#boundv, ampl = greedy_mfs_2d(poly, bound, norm_vec, pos_src, neumann_operator, -3, lx + 3, -3, ly + 3, 150, k=2*np.pi*f,
+#                             niter=npoints, tol=1e-3, nkeep=10, min_dist=0.2)
 
 # plot boundary
 plot = True
@@ -149,5 +219,7 @@ alpha = solve(beta, norm_vec, bound, boundv, pos_src, k, source_type='dirac', co
 
 # plot the solution
 sol = compute_sol(alpha, points, boundv, k, pos_src)
+out_points = out_polygon(points, poly)
 
+sol[out_points] = np.nan + 1j*np.nan
 plot_complex(xx, yy, sol, extent=[0, lx, 0, ly], vmin=-2, vmax=2)

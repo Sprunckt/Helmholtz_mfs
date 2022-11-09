@@ -1,6 +1,7 @@
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import numpy as np
 import matplotlib.pyplot as plt
+from shapely.geometry import Polygon, Point
 
 
 def plot_complex(xx, yy, data, extent, vmin=None, vmax=None):
@@ -21,7 +22,7 @@ def plot_complex(xx, yy, data, extent, vmin=None, vmax=None):
     plt.show()
 
 
-def rectangle(npoints, lx, ly, dedge=0.015):
+def sample_rectangle(npoints, lx, ly, dedge=0.015):
     dx = 2*(lx + ly) / npoints
     nx = int(np.rint(lx / dx))
     ny = (npoints - 2*nx) // 2
@@ -37,7 +38,7 @@ def rectangle(npoints, lx, ly, dedge=0.015):
                      axis=1))
 
 
-def polygon(npoints, vertices, dedge=0.005):
+def sample_polygon(npoints, vertices, dedge=0.005):
     """Compute the boundary and outside normal vectors of a polygon given its vertices given in counter-clockwise order.
     The number of points per edge is weighted by edge length."""
     lengths = np.linalg.norm(vertices - np.roll(vertices, -1, axis=0), axis=1)
@@ -55,7 +56,7 @@ def polygon(npoints, vertices, dedge=0.005):
     return boundary, normal / np.linalg.norm(normal, axis=1)[:, np.newaxis]
 
 
-def ellipse(npoints, radiusx, radiusy):
+def sample_ellipse(npoints, radiusx, radiusy):
     theta = np.linspace(0, 2*np.pi, npoints)
     normvec = np.stack([radiusy*np.cos(theta), radiusx*np.sin(theta)], axis=1)
     return (np.stack([radiusx*np.cos(theta), radiusy*np.sin(theta)], axis=1),
@@ -64,3 +65,19 @@ def ellipse(npoints, radiusx, radiusy):
 
 def translate_boundary(boundary, normal, offset):
     return boundary + offset*normal
+
+
+def out_polygon(points, vertices, min_dist=0.0):
+    """Check if points (shape (npoints, d)) are outside and at a distance superior to min_dist of a (not necessarily
+    convex) polygon given by its vertices (shape (nvertices, d)) in counter-clockwise order, or by a Polygon object.
+    Return an array of bool."""
+    outside = np.zeros(points.shape[0], dtype=bool)
+    if type(vertices) is not Polygon:
+        poly = Polygon(vertices)
+    else:
+        poly = vertices
+
+    for i, p in enumerate(points):
+        pp = Point(p)
+        outside[i] = (not poly.contains(pp)) and (poly.distance(pp) > min_dist)
+    return outside

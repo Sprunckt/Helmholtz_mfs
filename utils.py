@@ -2,6 +2,7 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 import numpy as np
 import matplotlib.pyplot as plt
 from shapely.geometry import Polygon, Point
+c = 343
 
 
 def plot_complex(xx, yy, data, extent, vmin=None, vmax=None):

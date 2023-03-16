@@ -39,9 +39,13 @@ def sample_rectangle(npoints, lx, ly, dedge=0.015):
                      axis=1))
 
 
-def sample_polygon(npoints, vertices, dedge=0.005):
-    """Compute the boundary and outside normal vectors of a polygon given its vertices given in counter-clockwise order.
-    The number of points per edge is weighted by edge length."""
+def chebyshev_nodes(a, b, N):
+    """Compute N Chebyshev nodes on the interval [a, b]."""
+    return 0.5*(a + b) + 0.5*(b - a)*np.cos(np.pi*(2*np.arange(N)[::-1] + 1) / (2*N))
+
+
+def sample_polygon(npoints, vertices):
+    """Compute the boundary and outside normal vectors of a polygon using Chebyshev nodes to sample the edges."""
     lengths = np.linalg.norm(vertices - np.roll(vertices, -1, axis=0), axis=1)
     lengths /= np.sum(lengths)
     lengths = np.round(lengths * npoints).astype(int)
@@ -52,9 +56,54 @@ def sample_polygon(npoints, vertices, dedge=0.005):
     for i, (v1, v2, l) in enumerate(zip(vertices, np.roll(vertices, -1, axis=0), lengths)):
         edge = v2 - v1
         normal[indstart:indstart + l, :] = np.reshape(np.array([edge[1], -edge[0]]), (1, 2))
-        boundary[indstart:indstart + l, :] = v1 + np.linspace(dedge, 1-dedge, l, endpoint=True)[:, np.newaxis] * edge
+        edge_norm = np.linalg.norm(edge)
+        boundary[indstart:indstart + l, :] = v1 + chebyshev_nodes(0, edge_norm, l)[:, np.newaxis] * edge / edge_norm
         indstart += l
     return boundary, normal / np.linalg.norm(normal, axis=1)[:, np.newaxis]
+
+
+def sample_cuboid_chebyshev(npoints, lx, ly, lz):
+    """Compute the boundary and outside normal vectors of a cuboid using Chebyshev nodes to sample the faces, weight
+    by face surface."""
+    ax, ay, az = ly*lz, lx*lz, lx*ly
+    npfx = int(np.rint(ax / (ax + ay + az) * npoints)) // 2  # number of points for each x face
+    npfy = int(np.rint(ay / (ax + ay + az) * npoints)) // 2
+    npfz = int(np.rint(az / (ax + ay + az) * npoints)) // 2
+    print('npoints per face: ', npfx, npfy, npfz)
+    yx = chebyshev_nodes(0, ly, int(np.sqrt(npfx * ly / lz)))
+    zx = chebyshev_nodes(0, lz, int(npfx/len(yx)))
+
+    points = np.meshgrid(yx, zx, indexing='ij')
+    points = np.stack([np.zeros_like(points[0]), points[0], points[1]], axis=2).reshape((-1, 3))
+    n = len(points)
+    normals = np.stack([-np.ones(n), np.zeros(n), np.zeros(n)], axis=1)
+
+    points = np.concatenate([points, points + np.array([lx, 0, 0])], axis=0)
+    normals = np.concatenate([normals, -normals], axis=0)
+
+    xy = chebyshev_nodes(0, lx, int(np.sqrt(npfy * lx/lz)))
+    zy = chebyshev_nodes(0, lz, int(npfy / len(xy)))
+
+    pointsy = np.meshgrid(xy, zy, indexing='ij')
+    pointsy = np.stack([pointsy[0], np.zeros_like(pointsy[0]), pointsy[1]], axis=2).reshape((-1, 3))
+    n = len(pointsy)
+    normalsy = np.stack([np.zeros(n), -np.ones(n), np.zeros(n)], axis=1)
+
+    points = np.concatenate([points, pointsy, pointsy + np.array([0, ly, 0])], axis=0)
+    normals = np.concatenate([normals, normalsy, -normalsy], axis=0)
+
+    xz = chebyshev_nodes(0, lx, int(np.sqrt(npfz * lx / ly)))
+    yz = chebyshev_nodes(0, ly, int(npfz/len(xz)))
+
+    pointsz = np.meshgrid(xz, yz, indexing='ij')
+    pointsz = np.stack([pointsz[0], pointsz[1], np.zeros_like(pointsz[0])], axis=2).reshape((-1, 3))
+    n = len(pointsz)
+    normalsz = np.stack([np.zeros(n), np.zeros(n), -np.ones(n)], axis=1)
+
+    points = np.concatenate([points, pointsz, pointsz + np.array([0, 0, lz])], axis=0)
+    normals = np.concatenate([normals, normalsz, -normalsz], axis=0)
+
+    return points, normals / np.linalg.norm(normals, axis=1)[:, np.newaxis]
 
 
 def sample_ellipse(npoints, radiusx, radiusy):
@@ -62,6 +111,14 @@ def sample_ellipse(npoints, radiusx, radiusy):
     normvec = np.stack([radiusy*np.cos(theta), radiusx*np.sin(theta)], axis=1)
     return (np.stack([radiusx*np.cos(theta), radiusy*np.sin(theta)], axis=1),
             normvec / np.linalg.norm(normvec, axis=1)[:, np.newaxis])
+
+
+def compute_normals(boundary):
+    """Compute the normal vectors to the boundary given by its vertices in counter-clockwise order. Use the formula :
+    n = (-y_{i+1} + y_{i-1}, -x_{i-1} + x_{i+1})/2"""
+    normals = np.stack([-np.roll(boundary[:, 1], 1) + np.roll(boundary[:, 1], -1),
+                        -np.roll(boundary[:, 0], -1) + np.roll(boundary[:, 0], 1)], axis=1)
+    return normals / np.linalg.norm(normals, axis=1)[:, np.newaxis]
 
 
 def translate_boundary(boundary, normal, offset):
@@ -82,3 +139,12 @@ def out_polygon(points, vertices, min_dist=0.0):
         pp = Point(p)
         outside[i] = (not poly.contains(pp)) and (poly.distance(pp) > min_dist)
     return outside
+
+
+def plot_boundary(bound, norm_vec, boundv, pos_src):
+    plt.plot(bound[:, 0], bound[:, 1], '.-', label='boundary')
+    plt.quiver(bound[:, 0], bound[:, 1], norm_vec[:, 0], norm_vec[:, 1])
+    plt.plot(boundv[:, 0], boundv[:, 1], '.', label='virtual boundary')
+    plt.plot(pos_src[:, 0], pos_src[:, 1], 'o', label='source')
+    plt.legend()
+    plt.show()

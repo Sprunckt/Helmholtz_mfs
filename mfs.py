@@ -6,9 +6,6 @@ from shapely.geometry import Polygon
 from sklearn.linear_model import Lasso
 
 
-c = 343
-
-
 def fundamental_solution(points, sources, k):
     """Compute the fundamental solution at the points given the sources, return a matrix of shape npoints, nsources."""
     return (1j/4) * hankel1(0, k*np.linalg.norm(points[:, np.newaxis, :] - sources[np.newaxis, :, :], axis=-1))

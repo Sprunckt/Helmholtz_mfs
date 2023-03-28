@@ -56,8 +56,7 @@ def sample_polygon(npoints, vertices):
     for i, (v1, v2, l) in enumerate(zip(vertices, np.roll(vertices, -1, axis=0), lengths)):
         edge = v2 - v1
         normal[indstart:indstart + l, :] = np.reshape(np.array([edge[1], -edge[0]]), (1, 2))
-        edge_norm = np.linalg.norm(edge)
-        boundary[indstart:indstart + l, :] = v1 + chebyshev_nodes(0, edge_norm, l)[:, np.newaxis] * edge / edge_norm
+        boundary[indstart:indstart + l, :] = v1 + chebyshev_nodes(0, 1, l)[:, np.newaxis] * edge
         indstart += l
     return boundary, normal / np.linalg.norm(normal, axis=1)[:, np.newaxis]
 
@@ -146,5 +145,6 @@ def plot_boundary(bound, norm_vec, boundv, pos_src):
     plt.quiver(bound[:, 0], bound[:, 1], norm_vec[:, 0], norm_vec[:, 1])
     plt.plot(boundv[:, 0], boundv[:, 1], '.', label='virtual boundary')
     plt.plot(pos_src[:, 0], pos_src[:, 1], 'o', label='source')
+    plt.axis('equal')
     plt.legend()
     plt.show()

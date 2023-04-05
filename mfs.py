@@ -1,9 +1,7 @@
 import numpy as np
-import matplotlib.pyplot as plt
 from scipy.special import hankel1
-from utils import out_polygon
-from shapely.geometry import Polygon
-from sklearn.linear_model import Lasso
+from sklearn.linear_model import Lasso, LinearRegression, Ridge
+from scipy.sparse.linalg import gmres
 
 
 def fundamental_solution(points, sources, k):
@@ -35,7 +33,8 @@ def compute_exact_sol(points, image_src, k, weights=None):
     return np.sum(weights[np.newaxis, :] * fundamental_solution(points, image_src, k), axis=1)
 
 
-def solve(beta, normvec, bound, boundv, source, k, source_type='dirac', cond='dirichlet'):
+def solve(beta, normvec, bound, boundv, source, k, source_type='dirac', cond='dirichlet', method='direct',
+          return_mat=False):
     """Solve the Helmholtz equation with the given boundary conditions and return the coefficients of the solution in
     the MFS.
     args: - beta: impedance at the boundary
@@ -54,8 +53,8 @@ def solve(beta, normvec, bound, boundv, source, k, source_type='dirac', cond='di
     """
 
     # assemble the system matrix and rhs
-    npoints = len(bound)
-    A, b = np.zeros((npoints, npoints), dtype=complex), np.zeros((npoints, 1), dtype=complex)
+    npoints, nsrc = len(bound), len(boundv)
+    A, b = np.zeros((npoints, nsrc), dtype=complex), np.zeros((npoints, 1), dtype=complex)
 
     if source_type == 'dirac':
         indstop = npoints
@@ -74,7 +73,7 @@ def solve(beta, normvec, bound, boundv, source, k, source_type='dirac', cond='di
             diffs = bound[:, np.newaxis, :] - source[np.newaxis, :, :]  # rhs computation
             norms = np.linalg.norm(diffs, axis=-1)
             b[:] = - (np.sum(normvec[:, np.newaxis, :] * diffs, axis=-1) *
-                             fundamental_solution_derivative(norms, k) / norms)
+                      fundamental_solution_derivative(norms, k) / norms)
 
     elif cond == "dirichlet":
         A[:indstop, :] = fundamental_solution(bound[:indstop], boundv, k)
@@ -99,85 +98,28 @@ def solve(beta, normvec, bound, boundv, source, k, source_type='dirac', cond='di
         A[-1, :] = np.ones(npoints)
         b[-1] = 1.
 
-    return np.linalg.solve(A, b)
-
-
-def neumann_operator(bound, normvec, boundv, k):
-    """Compute the neumann operator at the boundary points given the virtual boundary points."""
-    diffs = bound[:, np.newaxis, :] - boundv[np.newaxis, :, :]
-    norms = np.linalg.norm(diffs, axis=-1)
-    return (np.sum(normvec[:, np.newaxis, :] * diffs, axis=-1) /  # (np, 2)*(np, np, 2) -> (np, np)
-                      norms * fundamental_solution_derivative(norms, k))
-
-
-def fit_weights(y, target, boundary, normvec, b_operator, k, v_src, lam):
-    # shape (M, N, K) -> (J, K)
-    gamma_mat_cpx = b_operator(boundary, normvec, v_src, k)
-    gamma_mat = np.concatenate([np.concatenate([np.real(gamma_mat_cpx), -np.imag(gamma_mat_cpx)], axis=1),
-                                np.concatenate([np.imag(gamma_mat_cpx), np.real(gamma_mat_cpx)], axis=1)],
-                               axis=0)
-    lasso_fitter = Lasso(alpha=lam, fit_intercept=False, max_iter=10000, tol=1e-8)
-    scale = np.sqrt(len(gamma_mat))  # rescaling factor for sklearn convention
-    lasso_fitter.fit(scale * gamma_mat, scale * target)
-    nb_src = len(v_src)
-    ampl = lasso_fitter.coef_[:nb_src] + 1j*lasso_fitter.coef_[nb_src:]
-    res = y - np.dot(gamma_mat_cpx, ampl)
-    return ampl, res
-
-
-def greedy_mfs_2d(poly, boundary, normvec, src_loc, b_operator, xmin, xmax, ymin, ymax, ngrid, k=2., niter=400,
-                  tol=1e-3, nkeep=1, min_dist=0., lam=1e-3, init=None):
-    if type(poly) is not Polygon:
-        poly = Polygon(poly)
-
-    src_loc = np.reshape(src_loc, (1, 2))
-
-    # cartesian intialization grid
-    gridx, gridy = np.meshgrid(np.linspace(xmin, xmax, ngrid), np.linspace(ymin, ymax, ngrid))
-    grid = np.stack([gridx.flatten(), gridy.flatten()], axis=1)
-    y = -np.reshape(b_operator(boundary, normvec, src_loc, k), -1)  # shape (nboundary,)
-    target = np.concatenate([np.real(y), np.imag(y)]).reshape(-1, 1)  # real vector for lasso fitting
-
-    if init is None:
-        res, nsrc = y, 0
-        niter = len(boundary)
+    if method == "direct":
+        res = np.linalg.solve(A, b)
+    elif method == 'lstsq':
+        res = np.linalg.lstsq(A, b, rcond=-1)[0]
+    elif method == "tsvd":
+        res = np.linalg.pinv(A) @ b
+    elif method == "gmres":
+        res = gmres(A, b, tol=1e-8)[0]
+    elif method == "ridge":
+        lasso_fitter = Ridge(alpha=1e-3, fit_intercept=False, tol=1e-8)
+        Ac1 = np.concatenate([np.real(A), -np.imag(A)], axis=1)
+        Ac2 = np.concatenate([np.imag(A), np.real(A)], axis=1)
+        A = np.concatenate([Ac1, Ac2], axis=0)
+        b = np.concatenate([np.real(b), np.imag(b)], axis=0)
+        scale = np.sqrt(len(A))  # rescaling factor for sklearn convention
+        lasso_fitter.fit(scale * A, scale * b)
+        res = lasso_fitter.coef_.flatten()
+        res = res[:npoints] + 1j * res[npoints:]
     else:
-        ampl, res = fit_weights(y, target, boundary, normvec, b_operator, k, init, lam)
-        v_src, nsrc = init, len(init)
-        niter = len(boundary) - nsrc
+        raise ValueError("method must be 'direct', 'tsvd', 'lstsq', 'ridge' or 'gmres'")
 
-    not_inside = out_polygon(grid, poly, min_dist).reshape(ngrid, ngrid)
-    grid_outside = grid[not_inside.flatten(), :]
-
-    for i in range(niter):
-        # map gamma at each grid point
-        gamma_vec = b_operator(boundary, normvec, grid_outside, k)  # shape (nboundary, ninside**2)
-        eta_val = np.sum(np.real(np.conj(gamma_vec)*res[:, np.newaxis]), axis=0)  # value of eta at every grid point
-        gridval = np.zeros(ngrid**2)
-        gridval[not_inside.flatten()] = eta_val
-        if i == niter-1:
-            plt.imshow(gridval.reshape(ngrid, ngrid), extent=[xmin, xmax, ymin, ymax])
-            plt.plot(v_src[:, 0], v_src[:, 1], '.', label='virtual boundary', color='red')
-            plt.colorbar()
-            plt.show()
-
-        if nsrc == 0:
-            v_src = grid[not_inside.flatten()][np.argmax(eta_val)].reshape([1, -1])
-        else:
-            v_src = np.concatenate([v_src, grid[not_inside.flatten()][np.argmax(eta_val)].reshape([1, -1])], axis=0)
-
-        # todo : gridless search
-        # p = mp.Pool(8)  # todo: get number of cores
-        # optivals = p.map(opti_eta, bestvals)
-        # opti_ind, opti_val = 0, 0.
-        # for j, el in enumerate(optivals):
-        #     if el.fun > opti_val:
-        #         opti_ind, opti_val = j, el.fun
-        # v_src = np.concatenate([v_src, optivals[opti_ind].x], axis=0)
-        # optimize amplitudes
-
-        ampl, res = fit_weights(y, target, boundary, normvec, b_operator, k, v_src, lam)
-        nsrc += 1
-        print("residue : ", np.linalg.norm(res))
-
-    return v_src, ampl
+    if return_mat:
+        return res, A
+    else:
+        return res

@@ -115,7 +115,7 @@ def solve(beta, normvec, bound, boundv, source, k, source_type='dirac', cond='di
         scale = np.sqrt(len(A))  # rescaling factor for sklearn convention
         lasso_fitter.fit(scale * A, scale * b)
         res = lasso_fitter.coef_.flatten()
-        res = res[:npoints] + 1j * res[npoints:]
+        res = res[:nsrc] + 1j * res[nsrc:]
     else:
         raise ValueError("method must be 'direct', 'tsvd', 'lstsq', 'ridge' or 'gmres'")
 
@@ -123,3 +123,22 @@ def solve(beta, normvec, bound, boundv, source, k, source_type='dirac', cond='di
         return res, A
     else:
         return res
+
+
+def neumann_operator(points, normvec, alpha, sourcesv, source, k):
+    """ Computes the normal derivative of the solution given by the virtual sources sourcesv with coefficients alpha at
+    the points points with normal vector normvec. Return the contribution from the virtual sources and the contribution
+    from the source.
+    """
+
+    diffs = points[:, np.newaxis, :] - sourcesv[np.newaxis, :, :]  # (np, npv, 2)
+    norms = np.linalg.norm(diffs, axis=-1)  # (np, npv)
+    vcontr = np.sum(np.sum(normvec[:, np.newaxis, :] * diffs, axis=-1) /  # (np, 2)*(np, npv, 2) -> (npv,)
+                    norms * fundamental_solution_derivative(norms, k)*alpha.reshape(1, -1), axis=1)
+    diffs = points[:, np.newaxis, :] - source[np.newaxis, :, :]
+    norms = np.linalg.norm(diffs, axis=-1)
+
+    src_contr = - (np.sum(normvec[:, np.newaxis, :] * diffs, axis=-1) *
+                   fundamental_solution_derivative(norms, k) / norms)
+
+    return vcontr, src_contr

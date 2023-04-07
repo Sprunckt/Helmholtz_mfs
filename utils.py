@@ -1,7 +1,8 @@
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import numpy as np
 import matplotlib.pyplot as plt
-from shapely.geometry import Polygon, Point
+from shapely.geometry import Polygon as ShapelyPolygon
+from shapely.geometry import Point as ShapelyPoint
 c = 343
 
 
@@ -44,7 +45,7 @@ def chebyshev_nodes(a, b, N):
     return 0.5*(a + b) + 0.5*(b - a)*np.cos(np.pi*(2*np.arange(N)[::-1] + 1) / (2*N))
 
 
-def sample_polygon(npoints, vertices):
+def sample_polygon(npoints, vertices, distribution="linear"):
     """Compute the boundary and outside normal vectors of a polygon using Chebyshev nodes to sample the edges."""
     lengths = np.linalg.norm(vertices - np.roll(vertices, -1, axis=0), axis=1)
     lengths /= np.sum(lengths)
@@ -56,9 +57,62 @@ def sample_polygon(npoints, vertices):
     for i, (v1, v2, l) in enumerate(zip(vertices, np.roll(vertices, -1, axis=0), lengths)):
         edge = v2 - v1
         normal[indstart:indstart + l, :] = np.reshape(np.array([edge[1], -edge[0]]), (1, 2))
-        boundary[indstart:indstart + l, :] = v1 + chebyshev_nodes(0, 1, l)[:, np.newaxis] * edge
+        if distribution == "linear":
+            nodes = np.linspace(0, 1, l+2)[1:-1]
+        else:
+            nodes = chebyshev_nodes(0, 1, l)
+        boundary[indstart:indstart + l, :] = v1 + edge * nodes[:, np.newaxis]
         indstart += l
     return boundary, normal / np.linalg.norm(normal, axis=1)[:, np.newaxis]
+
+
+def sample_polygon_rounded(npoints, vertices, radius):
+    """Sample on an enlarged version of the polygon (boundary translated by radius in the normal direction), with
+    rounded edges."""
+    # compute number of points for each edge and rounded corner
+    lengths = np.zeros(2*len(vertices))
+    lengths[::2] = np.linalg.norm(vertices - np.roll(vertices, -1, axis=0), axis=1)
+    normals = np.roll(vertices, -1, axis=0) - vertices
+    normals = np.stack([normals[:, 1], -normals[:, 0]], axis=1)
+    normals /= np.linalg.norm(normals, axis=1)[:, np.newaxis]
+
+    # add rounded corners, ponderate each corner by angle
+    angles = np.arccos(np.sum(normals * np.roll(normals, -1, axis=0), axis=1))
+    lengths[1::2] = np.roll(angles, 1) * radius
+    lengths /= np.sum(lengths)
+    lengths = np.round(lengths * npoints).astype(int)
+    lengths[-1] += npoints - np.sum(lengths)
+
+    boundary = np.zeros((npoints, 2))
+    indstart = 0
+    for i in range(len(lengths)):
+        le = lengths[i]
+        v1, v2 = vertices[i//2], vertices[(i//2 + 1) % len(vertices)]
+        if i % 2 == 0:
+            edge = v2 - v1
+            boundary[indstart:indstart + le, :] = v1 + normals[i//2]*radius + edge*chebyshev_nodes(0, 1, le)[:, np.newaxis]
+        else:
+            vect1, vect2 = normals[i//2-1],  normals[i//2]
+            boundary[indstart:indstart + le, :] = sample_points_on_circle(v1, radius, vect1, vect2, le+2)[1:-1, :]
+        indstart += le
+
+    return boundary
+
+
+def sample_points_on_circle(center, radius, start_vec, end_vec, num_points):
+    # Compute the start and end angles of the circular arc
+    start_vec = start_vec / np.linalg.norm(start_vec)
+    end_vec = end_vec / np.linalg.norm(end_vec)
+
+    start_angle = np.arctan2(start_vec[1], start_vec[0]) % (2*np.pi)
+    end_angle = np.arctan2(end_vec[1], end_vec[0])% (2*np.pi)
+    if end_angle < start_angle:
+        end_angle += 2*np.pi
+
+    angles = np.linspace(start_angle, end_angle, num_points)
+
+    points = center + radius*np.stack([np.cos(angles), np.sin(angles)], axis=1)
+    return points
 
 
 def sample_cuboid_chebyshev(npoints, lx, ly, lz):
@@ -130,12 +184,12 @@ def out_polygon(points, vertices, min_dist=0.0):
     Return an array of bool."""
     outside = np.zeros(points.shape[0], dtype=bool)
     if type(vertices) is not Polygon:
-        poly = Polygon(vertices)
+        poly = ShapelyPolygon(vertices)
     else:
         poly = vertices
 
     for i, p in enumerate(points):
-        pp = Point(p)
+        pp = ShapelyPoint(p)
         outside[i] = (not poly.contains(pp)) and (poly.distance(pp) > min_dist)
     return outside
 
@@ -148,3 +202,55 @@ def plot_boundary(bound, norm_vec, boundv, pos_src):
     plt.axis('equal')
     plt.legend()
     plt.show()
+
+
+class Polygon:
+    def __init__(self, vertices):
+        self.vertices = vertices
+        edges = np.roll(vertices, -1, axis=0) - vertices
+        self.normals = np.stack([edges[:, 1], -edges[:, 0]], axis=1)
+        self.normals /= np.linalg.norm(self.normals, axis=1)[:, np.newaxis]
+        self.nedges = len(vertices)
+        self.lengths = np.linalg.norm(np.roll(vertices, -1, axis=0) - vertices, axis=1)
+
+    def sample_edge(self, n, edge_id, distribution='uniform', min_dist=None):
+        if distribution == "uniform":
+            if min_dist is None:
+                nodes = np.linspace(0, 1, n + 2)[1:-1]
+            else:
+                nodes = np.linspace(min_dist, 1 - min_dist, n)
+        else:
+            nodes = chebyshev_nodes(0, 1, n)
+        v1, v2 = self.vertices[edge_id], self.vertices[(edge_id + 1) % self.nedges]
+
+        return v1 + nodes[:, np.newaxis]*(v2 - v1)
+
+    def sample(self, npoints, distribution='uniform'):
+        lengths = self.lengths / np.sum(self.lengths)
+        lengths = np.round(lengths * npoints).astype(int)
+        lengths[-1] += npoints - np.sum(lengths)
+        boundary, normals = np.zeros((npoints, 2)), np.zeros((npoints, 2))
+        indstart = 0
+        for i in range(self.nedges):
+            n = lengths[i]
+            normals[indstart:indstart + n] = self.normals[i]
+            boundary[indstart:indstart + n] = self.sample_edge(n, i, distribution)
+            indstart += n
+
+        return boundary, normals
+
+    def is_out(self, points, min_dist=0.0):
+        """Check if points (shape (npoints, d)) are outside and at a distance superior to min_dist of a (not necessarily
+         convex) polygon given by its vertices (shape (nvertices, d)) in counter-clockwise order, or by a Polygon object.
+        Return an array of bool."""
+        outside = np.zeros(points.shape[0], dtype=bool)
+        poly = ShapelyPolygon(self.vertices)
+
+        for i, p in enumerate(points):
+            pp = ShapelyPoint(p)
+            outside[i] = (not poly.contains(pp)) and (poly.distance(pp) > min_dist)
+        return outside
+
+    def get_normal(self, edge_id):
+        return self.normals[edge_id]
+

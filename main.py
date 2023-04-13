@@ -1,6 +1,5 @@
-from utils import plot_complex, translate_boundary, sample_polygon, out_polygon, c, plot_boundary
+from utils import plot_complex, translate_boundary, Polygon, c, plot_boundary
 import numpy as np
-from shapely.geometry import Polygon
 from mfs import compute_sol, solve
 
 
@@ -14,11 +13,9 @@ f = 100
 vertices = np.array([[0, 0], [lx, 0.], [lx, ly], [0, ly]])
 
 poly = Polygon(vertices)
-bound, norm_vec = sample_polygon(npoints, vertices)
+bound, norm_vec = poly.sample(npoints, "uniform")
 dx = 0.1
-
-# virtual boundary points
-boundv = translate_boundary(bound, norm_vec, 0.2)
+boundv = translate_boundary(bound, norm_vec, dx)
 
 beta = np.ones(len(bound), dtype=complex)*(6-6j)
 pos_src = np.array([[2.5, 2.5]])
@@ -37,7 +34,7 @@ alpha = solve(beta, norm_vec, bound, boundv, pos_src, k, source_type='dirac', co
 
 # plot the solution
 sol = compute_sol(alpha, points, boundv, k, pos_src)
-out_points = out_polygon(points, poly)
+out_points = poly.is_out(points, poly)
 
 sol[out_points] = np.nan + 1j*np.nan
 plot_complex(xx, yy, sol, extent=[0, lx, 0, ly], vmin=-2, vmax=2)

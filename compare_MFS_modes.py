@@ -36,32 +36,62 @@ poly = Polygon(vertices)
 distribution = "uniform"
 
 
-def plot_bound_values(op, coeff, sourcesv, show=True, name="", **kwargs):
-    mfs_val, src_val, edges = [], [], [t*nplot for t in range(1, poly.nedges)]
+def plot_bound_values(op, coeff, sourcesv, coeffs_id, show=True, name="", plot3d=False, **kwargs):
+    mfs_val, src_val, edges, plot_nodes = [], [], [t*nplot for t in range(1, poly.nedges)], []
     for j in range(poly.nedges):
-        plot_nodes = poly.sample_edge(nplot, j, distribution="uniform")
+        plot_nodes.append(poly.sample_edge(nplot, j, distribution="uniform"))
         norms = np.repeat(poly.normals[j][np.newaxis, :], nplot, axis=0)
-        mfs_val.append(op(plot_nodes, norms, coeff, sourcesv, k, **kwargs))
-        src_val.append(op(plot_nodes, norms, np.array([-1.]), np.reshape(pos_src, (1, -1)), k, **kwargs))
+        mfs_val.append(op(plot_nodes[-1], norms, coeff, sourcesv, k, **kwargs))
+        src_val.append(op(plot_nodes[-1], norms, np.array([-1.]), np.reshape(pos_src, (1, -1)), k, **kwargs))
 
     mfs_val, src_val = np.concatenate(mfs_val), np.concatenate(src_val)
-    fig, ax = plt.subplots(1, 2, figsize=(20, 6))
-    ax[0].set_ylim([np.min(src_val.real), np.max(src_val.real)])
-    ax[1].set_ylim([np.min(src_val.imag), np.max(src_val.imag)])
-
     error_real = np.mean(np.abs(np.real(mfs_val) - np.real(src_val)))
     error_imag = np.mean(np.abs(np.imag(mfs_val) - np.imag(src_val)))
-    ax[0].set_title("Real part, nsrc={}, mean error={:3f}".format(npo, error_real))
-    ax[1].set_title("Imaginary part, mean error={:3f}".format(error_imag))
-    ax[0].plot(np.real(mfs_val), label="MFS")
-    ax[0].plot(np.real(src_val), '--', label="Source contribution")
-    ax[1].plot(np.imag(mfs_val), label="MFS")
-    ax[1].plot(np.imag(src_val), '--', label="Source contribution")
-    # add vertical bars at each edge change
-    ax[0].vlines(edges, np.min(src_val.real), np.max(src_val.real), colors="k", linestyles="dashed")
-    ax[1].vlines(edges, np.min(src_val.imag), np.max(src_val.imag), colors="k", linestyles="dashed")
+
+    if plot3d:
+        plot_nodes = np.concatenate(plot_nodes, axis=0)
+        fig = plt.figure(figsize=(20, 10))
+        ax1 = fig.add_subplot(221, projection='3d')
+        ax1.set_title("Real part, nsrc={}, mean error={:3f}".format(npo, error_real))
+        # plot the boundary values above the polygon
+        ax1.plot(plot_nodes[:, 0], plot_nodes[:, 1], np.real(mfs_val), label="MFS")
+        ax1.plot(plot_nodes[:, 0], plot_nodes[:, 1], np.real(src_val), '--', label="Source contribution")
+
+        ax2 = fig.add_subplot(222, projection='3d')
+        ax2.set_title("Imaginary part, mean error={:3f}".format(error_imag))
+        ax2.plot(plot_nodes[:, 0], plot_nodes[:, 1], np.imag(mfs_val), label="MFS")
+        ax2.plot(plot_nodes[:, 0], plot_nodes[:, 1], np.imag(src_val), '--', label="Source contribution")
+        for ax in [ax1, ax2]:             # plot the polygon on the z=0 plane
+            ax.plot(poly.vertices[:, 0], poly.vertices[:, 1], np.zeros(poly.nedges), 'k')
+            ax.plot([poly.vertices[0, 0], poly.vertices[-1, 0]],
+                    [poly.vertices[0, 1], poly.vertices[-1, 1]], [0, 0.], 'k')
+        plt.legend()
+
+    else:
+        fig, ax = plt.subplots(2, 2, figsize=(20, 6))
+        ax[0].set_ylim([np.min(src_val.real), np.max(src_val.real)])
+        ax[1].set_ylim([np.min(src_val.imag), np.max(src_val.imag)])
+
+        ax[0].set_title("Real part, nsrc={}, mean error={:3f}".format(npo, error_real))
+        ax[1].set_title("Imaginary part, mean error={:3f}".format(error_imag))
+        ax[0].plot(np.real(mfs_val), label="MFS")
+        ax[0].plot(np.real(src_val), '--', label="Source contribution")
+        ax[1].plot(np.imag(mfs_val), label="MFS")
+        ax[1].plot(np.imag(src_val), '--', label="Source contribution")
+        # add vertical bars at each edge change
+        ax[0].vlines(edges, np.min(src_val.real), np.max(src_val.real), colors="k", linestyles="dashed")
+        ax[1].vlines(edges, np.min(src_val.imag), np.max(src_val.imag), colors="k", linestyles="dashed")
+        plt.legend()
+        plt.tight_layout()
+
+    # add a subplot under both plots to show the coefficients
+    ax3 = fig.add_subplot(212)
+    ax3.set_title("Coefficients")
+    ax3.plot(coeff.real, '.', label="real part")
+    ax3.plot(coeff.imag, '.', label="imaginary part")
+    # plot a vline at each edge change (given by value changes in coeffs_id)
+    ax3.vlines(np.where(np.diff(coeffs_id) != 0)[0], np.min(coeff), np.max(coeff), colors="k", linestyles="dashed")
     plt.legend()
-    plt.tight_layout()
     if show:
         plt.show()
     else:  # save the figure
@@ -96,7 +126,7 @@ if test_type == "convergence":
 
             print("min and max values : ", np.min(alpha), np.max(alpha))
 
-            print("Solving for frequency {} Hz with {} sources".format(fs, npo))
+            print("Computing solution".format(fs, npo))
             sol = compute_sol(smfs.ampl, points, smfs.boundv, k, pos_src)
             print("Done")
 

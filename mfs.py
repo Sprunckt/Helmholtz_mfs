@@ -157,6 +157,14 @@ def robin_operator(points, normvec, alpha, sourcesv, k, beta):
     return vcontr
 
 
+def dirichlet_operator(points, _, alpha, sourcesv, k):
+    """ Computes the solution given by the virtual sources sourcesv with coefficients alpha at
+    the points points with normal vector normvec. Return the contribution from the virtual sources.
+    """
+
+    return compute_sol(alpha, points, sourcesv, k)
+
+
 class SlidingMFS:
     def __init__(self, nbound: int, nsrc: int, nobs: int, pos_src: np.ndarray, poly: Polygon,
                  k: float, dx: float, cond='neumann', lam=0., sample_kwargs=None, beta=None):
@@ -204,7 +212,7 @@ class SlidingMFS:
                       norms * fundamental_solution_derivative(norms, self.k)).squeeze()
         elif self.cond == 'dirichlet':
             vcontr = fundamental_solution(self.bound, self.boundv, self.k)
-            scontr = fundamental_solution(self.bound, self.pos_src, self.k)
+            scontr = fundamental_solution(self.bound, self.pos_src.reshape([1, -1]), self.k).squeeze()
 
         b = np.zeros((self.nsrc, 1), dtype=np.complex128)
         for i in range(self.nsrc):

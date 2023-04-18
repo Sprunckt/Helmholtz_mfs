@@ -191,16 +191,20 @@ class SlidingMFS:
         A = np.zeros((self.nsrc, self.nsrc), dtype=np.complex128)
         t1 = time.time()
         # compute the value of the normal derivative of the fundamental solution at the observation points
-        diffs = self.bound[:, np.newaxis, :] - self.boundv[np.newaxis, :, :]  # (npo, npv, 2)
-        norms = np.linalg.norm(diffs, axis=-1)  # (npo, npv)
-        vcontr = (np.sum(self.normvec[:, np.newaxis, :] * diffs, axis=-1) /  # (npo, npv)
-                  norms * fundamental_solution_derivative(norms, self.k))
+        if self.cond == 'neumann':
+            diffs = self.bound[:, np.newaxis, :] - self.boundv[np.newaxis, :, :]  # (npo, npv, 2)
+            norms = np.linalg.norm(diffs, axis=-1)  # (npo, npv)
+            vcontr = (np.sum(self.normvec[:, np.newaxis, :] * diffs, axis=-1) /  # (npo, npv)
+                      norms * fundamental_solution_derivative(norms, self.k))
 
-        # compute contribution of the source
-        diffs = self.bound[:, np.newaxis, :] - self.pos_src[np.newaxis, :, :]  # (npo, 2)
-        norms = np.linalg.norm(diffs, axis=-1)  # (npo, nsrc)
-        scontr = (np.sum(self.normvec[:, np.newaxis, :] * diffs, axis=-1) /  # (npo,)
-                  norms * fundamental_solution_derivative(norms, self.k)).squeeze()
+            # compute contribution of the source
+            diffs = self.bound[:, np.newaxis, :] - self.pos_src[np.newaxis, :, :]  # (npo, 2)
+            norms = np.linalg.norm(diffs, axis=-1)  # (npo, nsrc)
+            scontr = (np.sum(self.normvec[:, np.newaxis, :] * diffs, axis=-1) /  # (npo,)
+                      norms * fundamental_solution_derivative(norms, self.k)).squeeze()
+        elif self.cond == 'dirichlet':
+            vcontr = fundamental_solution(self.bound, self.boundv, self.k)
+            scontr = fundamental_solution(self.bound, self.pos_src, self.k)
 
         b = np.zeros((self.nsrc, 1), dtype=np.complex128)
         for i in range(self.nsrc):
@@ -222,7 +226,7 @@ class SlidingMFS:
         t2 = time.time()
         if verbose:
             print("Gram matrix computation took {:.3f} s".format(t2 - t1))
-        self.ampl = np.linalg.lstsq(real_matrix, real_rhs)[0]
+        self.ampl = np.linalg.lstsq(real_matrix, real_rhs, rcond=-1)[0]
         self.ampl = self.ampl[:self.nsrc] + 1j*self.ampl[self.nsrc:]
         t3 = time.time()
         if verbose:

@@ -13,11 +13,12 @@ nplot = 3000
 dx = 0.2
 plot_sol = False
 plot_bound = False
-plot_bound_cond = False
-test_type = "convergence"
+plot_bound_cond = True
+test_type = "comsol_polygon"
 bound_cond = "neumann"
 beta = 0.006378610727567917+0.009574047932848483j
 exact_path = "data/"
+kwargs = {}
 
 if bound_cond == "neumann":
     op = neumann_operator
@@ -149,37 +150,23 @@ elif test_type == "comsol_polygon":
     points, fem_data = points[::skip_len, :], fem_data[::skip_len, :]
     print("Number of data points: ", len(points))
     boundary_cond = "neumann"
-    npoints = [200, 300, 500, 800, 1200, 1500, 2000, 2500, 3000, 3500, 4000, 4001, 5000]
+    npoints = [1500, 2000, 2500, 3000]
     l2_comsol_mfs = np.zeros((len(npoints), len(freqs)))
     conditions = np.zeros((len(npoints), len(freqs)))
     # convergence analysis
     for indf, f in enumerate(freqs):
-
         data_val = fem_data[:, indf]  # FEM solution for the given frequency
         k = 2 * np.pi * f / 343
 
         for indp, npo in enumerate(npoints):
-            # # boundary points
-            # bound, norm_vec = poly.sample(500, distribution=distribution)
-            # # virtual boundary points
-            # boundv = bound + dx * norm_vec
-            #
-            # bound, norm_vec = poly.sample(npo, distribution=distribution, min_dist=None)
-            # # virtual boundary points
-            # # boundv = bound + dx * norm_vec
-            #
-            # if plot_bound:
-            #     plot_boundary(bound, norm_vec, boundv, pos_src)
-            #
-            # alpha, mat = solve(0, norm_vec, bound, boundv, pos_src, k, source_type='dirac',
-            #                    cond=boundary_cond, method='lstsq', return_mat=True)
             print("Solving for frequency {} Hz with {} sources".format(f, npo))
             smfs = SlidingMFS(nbound=npo, nsrc=500, nobs=200, pos_src=pos_src, k=k, poly=poly,
                               dx=dx, cond=boundary_cond, beta=beta)
-            # plot_boundary(smfs.bound, smfs.normvec, smfs.boundv, smfs.pos_src)
-            alpha, conditions[indp, indf] = smfs.gram_fit()
+
+            if plot_bound:  # plot boundary
+                plot_boundary(smfs.bound, smfs.normvec, smfs.boundv, smfs.pos_src)
+            alpha, conditions[indp, indf] = smfs.gram_fit()  # solve the system
             sol = compute_sol(smfs.ampl, points, smfs.boundv, k, pos_src)
-            alpha = smfs.ampl
             print("Done")
             print("min and max values : ", np.min(alpha), np.max(alpha))
 

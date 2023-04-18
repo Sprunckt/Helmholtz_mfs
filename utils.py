@@ -213,31 +213,48 @@ class Polygon:
         self.nedges = len(vertices)
         self.lengths = np.linalg.norm(np.roll(vertices, -1, axis=0) - vertices, axis=1)
 
-    def sample_edge(self, n, edge_id, distribution='uniform', min_dist=None):
+    def sample_edge(self, n, edge_id, distribution='uniform', min_dist=None, return_nodes=False):
         if distribution == "uniform":
             if min_dist is None:
                 nodes = np.linspace(0, 1, n + 2)[1:-1]
             else:
-                nodes = np.linspace(min_dist, 1 - min_dist, n)
+                nodes = np.linspace(min_dist, 1 - min_dist, n, endpoint=True)
         else:
             nodes = chebyshev_nodes(0, 1, n)
         v1, v2 = self.vertices[edge_id], self.vertices[(edge_id + 1) % self.nedges]
+        res = v1 + nodes[:, np.newaxis]*(v2 - v1)
 
-        return v1 + nodes[:, np.newaxis]*(v2 - v1)
+        if return_nodes:
+            return res, nodes
+        else:
+            return res
 
-    def sample(self, npoints, distribution='uniform'):
+    def sample(self, npoints, distribution='uniform', min_dist=None, return_ids=False, return_nodes=False):
         lengths = self.lengths / np.sum(self.lengths)
         lengths = np.round(lengths * npoints).astype(int)
         lengths[-1] += npoints - np.sum(lengths)
         boundary, normals = np.zeros((npoints, 2)), np.zeros((npoints, 2))
         indstart = 0
+        ids, params = np.zeros(npoints, dtype=int), []
         for i in range(self.nedges):
             n = lengths[i]
             normals[indstart:indstart + n] = self.normals[i]
-            boundary[indstart:indstart + n] = self.sample_edge(n, i, distribution)
+            boundary[indstart:indstart + n], nodes = self.sample_edge(n, i, distribution,
+                                                                      min_dist=min_dist, return_nodes=True)
             indstart += n
+            if return_ids:
+                ids[indstart - n:indstart] = i
+            if return_nodes:
+                params.append(nodes)
 
-        return boundary, normals
+        res = (boundary, normals)
+        if return_ids:
+            res += (ids,)
+        if return_nodes:
+            params = np.concatenate(params)
+            res += (params,)
+
+        return res
 
     def is_out(self, points, min_dist=0.0):
         """Check if points (shape (npoints, d)) are outside and at a distance superior to min_dist of a (not necessarily
@@ -254,3 +271,24 @@ class Polygon:
     def get_normal(self, edge_id):
         return self.normals[edge_id]
 
+    def parametrization_to_coord(self, edge_id, param):
+        """Given an array of integers edge_id and an array of floats param (comprised between 0 and 1), return the
+        corresponding coordinates in 2D"""
+        v1, v2 = self.vertices[edge_id], self.vertices[(edge_id + 1) % self.nedges]
+        return v1 + param[:, np.newaxis] * (v2 - v1)
+
+
+class Ellipse:
+    def __init__(self, radiusx, radiusy, center=None):
+        self.radiusx = radiusx
+        self.radiusy = radiusy
+        if center is None:
+            self.center = np.zeros(2)
+        else:
+            self.center = center.copy()
+
+    def sample(self, npoints):
+        theta = np.linspace(0, 2 * np.pi, npoints, endpoint=False)
+        normvec = np.stack([self.radiusy * np.cos(theta), self.radiusx * np.sin(theta)], axis=1)
+        return (np.stack([self.radiusx*np.cos(theta), self.radiusy*np.sin(theta)], axis=1) + self.center[np.newaxis, :],
+                normvec / np.linalg.norm(normvec, axis=1)[:, np.newaxis])

@@ -3,21 +3,28 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as colors
-from utils import plot_boundary, Polygon, sample_polygon_rounded
-from mfs import compute_sol, solve, neumann_operator
+from utils import plot_boundary, Polygon, sample_polygon_rounded, Ellipse
+from mfs import compute_sol, solve, neumann_operator, SlidingMFS, robin_operator, fundamental_solution, fundamental_solution_derivative
 
 import pyroomacoustics as pra
 std_off = pra.constants.get("frac_delay_length") // 2
 lx, ly = 5.2, 3.3
-nplot = 5000
+nplot = 3000
 dx = 0.2
 plot_sol = False
 plot_bound = False
-plot_bound_cond = True
-test_type = "comsol_polygon"
+plot_bound_cond = False
+test_type = "convergence"
+bound_cond = "neumann"
+beta = 0.006378610727567917+0.009574047932848483j
 exact_path = "data/"
 
-if test_type in ["comsol_polygon", "distance_polygon"]:
+if bound_cond == "neumann":
+    op = neumann_operator
+else:
+    op = robin_operator
+
+if test_type in ["comsol_polygon", "distance_polygon", "sliding_polygon"]:
     vertices = np.array([[2.2, 0], [4.3, 0.], [5.7, 1.9], [3.3, 5.1], [1.7, 5.5], [-0.75, 2.75]])
     pos_src = np.array([[1, 2.5]])
 else:
@@ -28,24 +35,36 @@ poly = Polygon(vertices)
 distribution = "uniform"
 
 
-def plot_neumann(coeff, sourcesv, show=True, name=""):
+def plot_bound_values(op, coeff, sourcesv, show=True, name="", **kwargs):
+    mfs_val, src_val, edges = [], [], [t*nplot for t in range(1, poly.nedges)]
     for j in range(poly.nedges):
         plot_nodes = poly.sample_edge(nplot, j, distribution="uniform")
-        norms = poly.normals[j][np.newaxis, :] * np.ones((nplot, 2))
-        mfs_val, src_val = neumann_operator(plot_nodes, norms, coeff, sourcesv, pos_src, k)
-        fig, ax = plt.subplots(1, 2, figsize=(12, 6))
-        ax[0].set_ylim([np.min(src_val.real), np.max(src_val.real)])
-        ax[1].set_ylim([np.min(src_val.imag), np.max(src_val.imag)])
-        ax[0].set_title("Real part, edge {}, nsrc={}".format(j, npo))
-        ax[0].plot(np.real(mfs_val), label="MFS")
-        ax[0].plot(np.real(src_val), '--', label="Source contribution")
-        ax[1].plot(np.imag(mfs_val), label="MFS")
-        ax[1].plot(np.imag(src_val), '--', label="Source contribution")
-        plt.legend()
-        if show:
-            plt.show()
-        else:  # save the figure
-            plt.savefig("data/fig/Neumann_edge_{}_{}_nsrc={}.png".format(name, j, npo))
+        norms = np.repeat(poly.normals[j][np.newaxis, :], nplot, axis=0)
+        mfs_val.append(op(plot_nodes, norms, coeff, sourcesv, k, **kwargs))
+        src_val.append(op(plot_nodes, norms, np.array([-1.]), np.reshape(pos_src, (1, -1)), k, **kwargs))
+
+    mfs_val, src_val = np.concatenate(mfs_val), np.concatenate(src_val)
+    fig, ax = plt.subplots(1, 2, figsize=(20, 6))
+    ax[0].set_ylim([np.min(src_val.real), np.max(src_val.real)])
+    ax[1].set_ylim([np.min(src_val.imag), np.max(src_val.imag)])
+
+    error_real = np.mean(np.abs(np.real(mfs_val) - np.real(src_val)))
+    error_imag = np.mean(np.abs(np.imag(mfs_val) - np.imag(src_val)))
+    ax[0].set_title("Real part, nsrc={}, mean error={:3f}".format(npo, error_real))
+    ax[1].set_title("Imaginary part, mean error={:3f}".format(error_imag))
+    ax[0].plot(np.real(mfs_val), label="MFS")
+    ax[0].plot(np.real(src_val), '--', label="Source contribution")
+    ax[1].plot(np.imag(mfs_val), label="MFS")
+    ax[1].plot(np.imag(src_val), '--', label="Source contribution")
+    # add vertical bars at each edge change
+    ax[0].vlines(edges, np.min(src_val.real), np.max(src_val.real), colors="k", linestyles="dashed")
+    ax[1].vlines(edges, np.min(src_val.imag), np.max(src_val.imag), colors="k", linestyles="dashed")
+    plt.legend()
+    plt.tight_layout()
+    if show:
+        plt.show()
+    else:  # save the figure
+        plt.savefig("data/fig/Neumann_edge_{}_nsrc={}.png".format(name, npo))
 
 
 if test_type == "convergence":
@@ -65,29 +84,23 @@ if test_type == "convergence":
         exact_sol = exact_sol.flatten()
 
         for itp, npo in enumerate(nb_bound):
-            # boundary points
-            # bound, norm_vec = poly.sample(500, distribution=distribution)
-            # virtual boundary points
-            # boundv = bound + dx * norm_vec
 
-            bound, norm_vec = poly.sample(npo, distribution=distribution)
-            boundv = bound + dx * norm_vec  # virtual boundary points
+            print("fitting for frequency {} Hz with {} sources".format(fs, npo))
+            smfs = SlidingMFS(nbound=npo, nsrc=500, nobs=200, pos_src=pos_src, k=k, poly=poly, dx=dx,
+                              cond=bound_cond, beta=beta)
+            alpha, conditions[itf, itp] = smfs.gram_fit()
 
             if plot_bound:  # plot boundary
-                plot_boundary(bound, norm_vec, boundv, pos_src)
+                plot_boundary(smfs.bound, smfs.normvec, smfs.boundv, pos_src)
 
-            # compute the solution
-            alpha, mat = solve(0., norm_vec, bound, boundv, pos_src, k, source_type='dirac',
-                               cond='neumann', return_mat=True, method="direct")
             print("min and max values : ", np.min(alpha), np.max(alpha))
 
             print("Solving for frequency {} Hz with {} sources".format(fs, npo))
-            sol = compute_sol(alpha, points, boundv, k, pos_src)
+            sol = compute_sol(smfs.ampl, points, smfs.boundv, k, pos_src)
             print("Done")
 
             print("imaginary part norm: {}".format(np.linalg.norm(np.imag(sol))))
 
-            conditions[itf, itp] = np.linalg.cond(mat)
             l2_rel_error[itf, itp] = np.linalg.norm(sol - exact_sol) / np.linalg.norm(exact_sol)
             print("condition number: {}, L2 error: {}".format(conditions[itf, itp], l2_rel_error[itf, itp]))
             if plot_sol:
@@ -104,7 +117,7 @@ if test_type == "convergence":
                 ax[1].set_title('MFS')
                 plt.show()
             if plot_bound_cond:
-                plot_neumann(alpha, boundv, show=False)
+                plot_bound_values(op, alpha, smfs.boundv, show=True)
     # do a linear regression on the log-log plot
     log_nb_bound = np.log(nb_bound)
     log_l2_error, log_l2_rel_error = np.log(conditions), np.log(l2_rel_error)
@@ -123,8 +136,10 @@ if test_type == "convergence":
     plt.show()
 
 elif test_type == "comsol_polygon":
-    fem_data = np.load("data/Helmholtz_Neumann_polygon.npy")
-
+    if bound_cond == "neumann":
+        fem_data = np.load("data/Helmholtz_Neumann_polygon.npy")
+    else:
+        fem_data = np.load("data/Helmholtz_Robin_polygon2.npy")
     # extracting frequencies from keys
     freqs = np.loadtxt("data/freqs_polygon.txt", dtype=float)[:1]
     print("frequency list :", freqs)
@@ -134,7 +149,7 @@ elif test_type == "comsol_polygon":
     points, fem_data = points[::skip_len, :], fem_data[::skip_len, :]
     print("Number of data points: ", len(points))
     boundary_cond = "neumann"
-    npoints = [200, 201, 202, 300, 500, 800, 1200, 1500, 2000, 2500, 3000, 3500, 4000, 4001, 5000]
+    npoints = [200, 300, 500, 800, 1200, 1500, 2000, 2500, 3000, 3500, 4000, 4001, 5000]
     l2_comsol_mfs = np.zeros((len(npoints), len(freqs)))
     conditions = np.zeros((len(npoints), len(freqs)))
     # convergence analysis
@@ -144,24 +159,29 @@ elif test_type == "comsol_polygon":
         k = 2 * np.pi * f / 343
 
         for indp, npo in enumerate(npoints):
-            # boundary points
+            # # boundary points
             # bound, norm_vec = poly.sample(500, distribution=distribution)
-            # virtual boundary points
+            # # virtual boundary points
             # boundv = bound + dx * norm_vec
-
-            bound, norm_vec = poly.sample(npo, distribution=distribution)
-            # virtual boundary points
-            boundv = bound + dx * norm_vec
-
-            if plot_bound:
-                plot_boundary(bound, norm_vec, boundv, pos_src)
-
-            alpha, mat = solve(0, norm_vec, bound, boundv, pos_src, k, source_type='dirac',
-                               cond=boundary_cond, method='tsvd', return_mat=True)
-            print("min and max values : ", np.min(alpha), np.max(alpha))
+            #
+            # bound, norm_vec = poly.sample(npo, distribution=distribution, min_dist=None)
+            # # virtual boundary points
+            # # boundv = bound + dx * norm_vec
+            #
+            # if plot_bound:
+            #     plot_boundary(bound, norm_vec, boundv, pos_src)
+            #
+            # alpha, mat = solve(0, norm_vec, bound, boundv, pos_src, k, source_type='dirac',
+            #                    cond=boundary_cond, method='lstsq', return_mat=True)
             print("Solving for frequency {} Hz with {} sources".format(f, npo))
-            sol = compute_sol(alpha, points, boundv, k, pos_src)
+            smfs = SlidingMFS(nbound=npo, nsrc=500, nobs=200, pos_src=pos_src, k=k, poly=poly,
+                              dx=dx, cond=boundary_cond, beta=beta)
+            # plot_boundary(smfs.bound, smfs.normvec, smfs.boundv, smfs.pos_src)
+            alpha, conditions[indp, indf] = smfs.gram_fit()
+            sol = compute_sol(smfs.ampl, points, smfs.boundv, k, pos_src)
+            alpha = smfs.ampl
             print("Done")
+            print("min and max values : ", np.min(alpha), np.max(alpha))
 
             if plot_sol:
                 val = np.linspace(np.min(data_val), np.max(data_val), 100)
@@ -179,9 +199,12 @@ elif test_type == "comsol_polygon":
 
                 plt.show()
             if plot_bound_cond:
-                plot_neumann(alpha, boundv, show=False, name="direct")
+                if bound_cond == "robin":
+                    kwargs = {"beta": smfs.beta}
 
-            conditions[indp, indf] = np.linalg.cond(mat)
+                plot_bound_values(op, alpha, smfs.boundv, show=False,
+                                  name="poly_cg_500_uniform_mean.png", **kwargs)
+
             l2_comsol_mfs[indp, indf] = np.linalg.norm(np.real(sol) - data_val) / np.linalg.norm(data_val)
             print("l2 error :", l2_comsol_mfs[indp, indf])
 
@@ -285,7 +308,7 @@ if test_type == "distance":
             boundv = bound + dx * norm_vec
             # solve the system
             alpha, mat = solve(0, norm_vec, bound, boundv, pos_src, k, method='direct',
-                               source_type='dirac', cond="neumann", return_mat=True)
+                               source_type='dirac', cond=bound_cond, return_mat=True)
             print("Solving for frequency {} Hz with {} sources".format(freq, nb))
             sol = compute_sol(alpha, points, boundv, k, pos_src)
             print("Done")
@@ -326,9 +349,16 @@ if test_type == "distance_polygon":
             bound, norm_vec = poly.sample(nb, distribution=distribution)
             boundv = bound + dx * norm_vec
 
+            # for sampling on an ellipse
+            # barycenter = np.mean(vertices, axis=0)
+            # distances = np.linalg.norm(vertices - barycenter, axis=1)
+            # maxdist = np.max(distances)
+            # ellipse = Ellipse(radiusx=maxdist + dx, radiusy=maxdist + dx, center=barycenter)
+            # boundv, _ = ellipse.sample(nb)
+
             # solve the system
             alpha, mat = solve(0, norm_vec, bound, boundv, pos_src, k,
-                               source_type='dirac', cond="neumann", method='direct', return_mat=True)
+                               source_type='dirac', cond=bound_cond, method='direct', return_mat=True)
             print("Solving for frequency {} Hz with {} sources".format(freq, nb))
             sol = compute_sol(alpha, points, boundv, k, pos_src)
             print("Done")
@@ -346,3 +376,69 @@ if test_type == "distance_polygon":
     plt.tight_layout()
     plt.show()
 
+if test_type == "sliding_polygon":
+
+    fem_data = np.load("data/Helmholtz_Neumann_polygon.npy")
+
+    # extracting frequencies from keys
+    freqs = np.loadtxt("data/freqs_polygon.txt", dtype=float)[:1]
+    print("frequency list :", freqs)
+
+    points, fem_data = fem_data[:, :2], fem_data[:, 2:]
+    skip_len = 1500
+    points, fem_data = points[::skip_len, :], fem_data[::skip_len, :]
+    print("Number of data points: ", len(points))
+    boundary_cond = "neumann"
+    npoints = [500, 800, 1200, 1500, 2000, 2500, 3000, 3500, 4000, 4001, 5000]
+    l2_comsol_mfs = np.zeros((len(npoints), len(freqs)))
+    conditions = np.zeros((len(npoints), len(freqs)))
+    # convergence analysis
+    for indf, f in enumerate(freqs):
+
+        data_val = fem_data[:, indf]  # FEM solution for the given frequency
+        k = 2 * np.pi * f / 343
+
+        for indp, npo in enumerate(npoints):
+
+            smfs = SlidingMFS(nbound=npo, nsrc=500, nobs=200, pos_src=pos_src, k=k, poly=poly, dx=dx, cond="neumann")
+            ini = np.concatenate([np.real(smfs.ampl), np.imag(smfs.ampl), smfs.paramsv])
+
+            if plot_bound:
+                plot_boundary(smfs.bound, smfs.normvec, smfs.boundv, pos_src)
+            smfs.src_slide_step(verbose=True)
+            if plot_bound:
+                plot_boundary(smfs.bound, smfs.normvec, smfs.boundv, pos_src)
+
+            smfs.mfs_fit()
+            alpha = smfs.ampl
+            print("min and max values : ", np.min(alpha), np.max(alpha))
+            print("Solving for frequency {} Hz with {} sources".format(f, npo))
+            sol = compute_sol(alpha, points, smfs.boundv, k, pos_src)
+            print("Done")
+
+            if plot_sol:
+                val = np.linspace(np.min(data_val), np.max(data_val), 100)
+                val2 = np.linspace(np.min(np.real(sol)), np.max(np.real(sol)), 100)
+
+                fig, ax = plt.subplots(1, 3)
+
+                ax[0].tricontourf(points[:, 0], points[:, 1], data_val, val)
+                ax[1].tricontourf(points[:, 0], points[:, 1], np.real(sol), val2)
+                rel_error = np.abs((np.real(sol) - data_val) / (data_val + 1e-16))
+                rel_error[rel_error > 2] = 2
+                res = ax[2].tricontourf(points[:, 0], points[:, 1], rel_error)
+                plt.colorbar(res)
+                ax[0].set_aspect('equal'), ax[1].set_aspect('equal'), ax[2].set_aspect('equal')
+
+                plt.show()
+            if plot_bound_cond:
+                plot_bound_values(alpha, smfs.boundv, show=False, name="lstsq_500_uniform_mdist2001")
+
+            l2_comsol_mfs[indp, indf] = np.linalg.norm(np.real(sol) - data_val) / np.linalg.norm(data_val)
+            print("l2 error :", l2_comsol_mfs[indp, indf])
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    for i in range(len(freqs)):
+        ax.loglog(npoints, l2_comsol_mfs[:, i], label=str(freqs[i]) + ' Hz')
+    plt.legend()
+    plt.show()

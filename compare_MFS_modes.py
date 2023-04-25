@@ -199,7 +199,7 @@ elif test_type == "comsol_polygon":
         for indp, npo in enumerate(npoints):
             print("Solving for frequency {} Hz with {} sources".format(f, npo))
             smfs = SlidingMFS(nbound=npo, nsrc=500, nobs=200, pos_src=pos_src, k=k, poly=poly,
-                              dx=dx, cond=boundary_cond, beta=beta)
+                              dx=dx, cond=bound_cond, beta=beta)
 
             if plot_bound:  # plot boundary
                 plot_boundary(smfs.bound, smfs.normvec, smfs.boundv, smfs.pos_src)

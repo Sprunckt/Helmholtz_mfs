@@ -25,7 +25,7 @@ def compute_sol(alpha, points, sourcesv, k, source=None, decouple=False, interna
     If decouple is True, alpha is supposed tobe of shape 2n, the first n coefficients correspond to the real part of the
     fundamental solutions, the last n to the imaginary part."""
     ncoeff = len(alpha)
-    if internal_boundv is not None:
+    if internal_boundv is None:
         fund_sol = fundamental_solution(points, sourcesv, k)
     else:
         fund_sol = (np.real(fundamental_solution(points, sourcesv, k)) +

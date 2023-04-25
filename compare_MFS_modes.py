@@ -3,7 +3,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as colors
-from utils import plot_boundary, Polygon, sample_polygon_rounded, Ellipse
+from utils import plot_boundary, Polygon, Ellipse
 from mfs import compute_sol, solve, neumann_operator, SlidingMFS, robin_operator, dirichlet_operator
 
 import pyroomacoustics as pra

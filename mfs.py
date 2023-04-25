@@ -20,15 +20,27 @@ def fundamental_solution_derivative(dist, k):
     return -(1j/4) * k * hankel1(1, k*dist)
 
 
-def compute_sol(alpha, points, sourcesv, k, source=None):
-    """Compute the solution at the points given the virtual sources and the associated coefficients."""
-
-    if source is None:
-        return np.sum(np.reshape(alpha, -1)[np.newaxis, :] * fundamental_solution(points, sourcesv, k), axis=1)
+def compute_sol(alpha, points, sourcesv, k, source=None, decouple=False, internal_boundv=None):
+    """Compute the solution at the points given the virtual sources and the associated coefficients.
+    If decouple is True, alpha is supposed tobe of shape 2n, the first n coefficients correspond to the real part of the
+    fundamental solutions, the last n to the imaginary part."""
+    ncoeff = len(alpha)
+    if internal_boundv is not None:
+        fund_sol = fundamental_solution(points, sourcesv, k)
     else:
-        return (np.sum(np.reshape(alpha, -1)[np.newaxis, :] *
-                       fundamental_solution(points, sourcesv, k), axis=1) +
-                np.reshape(fundamental_solution(points, source, k), -1))
+        fund_sol = (np.real(fundamental_solution(points, sourcesv, k)) +
+                    1j * np.imag(fundamental_solution(points, internal_boundv, k)))
+    if decouple and ncoeff > 1:
+        res = (np.sum(np.reshape(alpha[:ncoeff//2], -1)[np.newaxis, :] * np.real(fund_sol), axis=1) +
+               np.sum(np.reshape(alpha[ncoeff//2:], -1)[np.newaxis, :] * np.imag(fund_sol), axis=1))
+
+    else:
+        res = np.sum(np.reshape(alpha, -1)[np.newaxis, :] * fund_sol, axis=1)
+
+    if source is not None:
+        return res + np.reshape(fundamental_solution(points, source, k), -1)
+    else:
+        return res
 
 
 def compute_exact_sol(points, image_src, k, weights=None):
@@ -38,8 +50,8 @@ def compute_exact_sol(points, image_src, k, weights=None):
     return np.sum(weights[np.newaxis, :] * fundamental_solution(points, image_src, k), axis=1)
 
 
-def solve(beta, normvec, bound, boundv, source, k, source_type='dirac', cond='dirichlet', method='direct',
-          return_mat=False):
+def solve(beta, normvec, bound, boundv, source, k, source_type='dirac', cond='dirichlet', method='direct', offset=None,
+          return_mat=False, decouple=False, internal_boundv=None):
     """Solve the Helmholtz equation with the given boundary conditions and return the coefficients of the solution in
     the MFS.
     args: - beta: impedance at the boundary
@@ -72,9 +84,18 @@ def solve(beta, normvec, bound, boundv, source, k, source_type='dirac', cond='di
     if cond == "neumann":
         diffs = bound[:indstop, np.newaxis, :] - boundv[np.newaxis, :, :]
         norms = np.linalg.norm(diffs, axis=-1)
-        A[:indstop, :] = (np.sum(normvec[:indstop, np.newaxis, :] * diffs, axis=-1) /  # (np, 2)*(np, np, 2) -> (np, np)
-                          norms * fundamental_solution_derivative(norms, k))
 
+        # (np, 2)*(np, npv, 2)->(np, npv)
+        scalar_prod = np.sum(normvec[:indstop, np.newaxis, :] * diffs, axis=-1) / norms
+        if internal_boundv is None:
+            A[:indstop, :] = scalar_prod * fundamental_solution_derivative(norms, k)
+        else:  # compute imaginary parts at the internal points
+            A[:indstop, :] = scalar_prod * np.real(fundamental_solution_derivative(norms, k))
+            diffs_internal = bound[:indstop, np.newaxis, :] - internal_boundv[np.newaxis, :, :]
+            norms_internal = np.linalg.norm(diffs_internal, axis=-1)
+            scalar_prod_internal = np.sum(normvec[:indstop, np.newaxis, :] * diffs_internal, axis=-1) / norms_internal
+
+            A[:indstop, :] += 1j * scalar_prod_internal * np.imag(fundamental_solution_derivative(norms_internal, k))
         if source_type == 'dirac':  # inhomogenous equation with dirac source
             diffs = bound[:, np.newaxis, :] - source[np.newaxis, :, :]  # rhs computation
             norms = np.linalg.norm(diffs, axis=-1)
@@ -104,6 +125,12 @@ def solve(beta, normvec, bound, boundv, source, k, source_type='dirac', cond='di
         A[-1, :] = np.ones(npoints)
         b[-1] = 1.
 
+    if decouple:
+        A = np.concatenate([np.real(A), np.imag(A)], axis=1)
+
+    if offset is not None:
+        b += offset.reshape(-1, 1)
+
     if method == "direct":
         res = np.linalg.solve(A, b)
     elif method == 'lstsq':
@@ -131,15 +158,29 @@ def solve(beta, normvec, bound, boundv, source, k, source_type='dirac', cond='di
         return res
 
 
-def neumann_operator(points, normvec, alpha, sourcesv, k):
+def neumann_operator(points, normvec, alpha, sourcesv, k, decouple=False, internal_boundv=None):
     """ Computes the normal derivative of the solution given by the virtual sources sourcesv with coefficients alpha at
-    the points points with normal vector normvec. Return the contribution from the virtual sources.
+    the points 'points' with normal vector normvec. Return the contribution from the virtual sources.
     """
-
+    ncoeff = len(alpha)
     diffs = points[:, np.newaxis, :] - sourcesv[np.newaxis, :, :]  # (np, npv, 2)
     norms = np.linalg.norm(diffs, axis=-1)  # (np, npv)
-    vcontr = np.sum(np.sum(normvec[:, np.newaxis, :] * diffs, axis=-1) /  # (np, 2)*(np, npv, 2) -> (npv,)
-                    norms * fundamental_solution_derivative(norms, k)*alpha.reshape(1, -1), axis=1)
+    if internal_boundv is None or ncoeff == 1:
+        fund_der = fundamental_solution_derivative(norms, k)
+    else:
+        fund_der = np.real(fundamental_solution_derivative(norms, k)).astype(np.complex128)
+        diffs_internal = points[:, np.newaxis, :] - internal_boundv[np.newaxis, :, :]
+        norms_internal = np.linalg.norm(diffs_internal, axis=-1)
+        fund_der += 1j * np.imag(fundamental_solution_derivative(norms_internal, k))
+
+    if decouple and ncoeff > 1:
+        vcontr = np.sum(np.sum(normvec[:, np.newaxis, :] * diffs, axis=-1) / norms * (
+                        np.real(fund_der)*alpha[:ncoeff//2].reshape(1, -1) +
+                        np.imag(fund_der)*alpha[ncoeff//2:].reshape(1, -1)), axis=1)
+
+    else:
+        vcontr = np.sum(np.sum(normvec[:, np.newaxis, :] * diffs, axis=-1) /  # (np, 2)*(np, npv, 2) -> (npv,)
+                        norms * fund_der*alpha.reshape(1, -1), axis=1)
     return vcontr
 
 
@@ -159,7 +200,7 @@ def robin_operator(points, normvec, alpha, sourcesv, k, beta):
 
 def dirichlet_operator(points, _, alpha, sourcesv, k):
     """ Computes the solution given by the virtual sources sourcesv with coefficients alpha at
-    the points points with normal vector normvec. Return the contribution from the virtual sources.
+    the points 'points' with normal vector normvec. Return the contribution from the virtual sources.
     """
 
     return compute_sol(alpha, points, sourcesv, k)
@@ -176,10 +217,12 @@ class SlidingMFS:
         self.nbound, self.nsrc, self.nobs = nbound, nsrc, nobs
         self.lam = lam
         if sample_kwargs is None:
-            sample_kwargs = {"distribution": 'uniform', "min_dist": 0.}
+            sample_kwargs = {"distribution": 'uniform', "min_dist": 0.05}
         self.bound, self.normvec, self.bound_ids, self.params = poly.sample(nbound, **sample_kwargs,
                                                                             return_ids=True, return_nodes=True)
         self.bound_obs, self.normvec_obs = poly.sample(nobs, distribution='cheby')
+
+        sample_kwargs["min_dist"], sample_kwargs["distribution"] = 0.0, "uniform"
         boundv, self.normvecv, self.boundv_ids, self.paramsv = poly.sample(nsrc, **sample_kwargs,
                                                                            return_ids=True, return_nodes=True)
         self.boundv = boundv + dx*self.normvecv
@@ -194,7 +237,7 @@ class SlidingMFS:
 
         self.ampl = np.zeros(self.nsrc, dtype=np.complex128)
 
-    def gram_fit(self, verbose=True):
+    def gram_fit(self, verbose=True, lam=None):
         """Compute scalar products between fundamental solutions, use the boundary points as quadrature points"""
         A = np.zeros((self.nsrc, self.nsrc), dtype=np.complex128)
         t1 = time.time()
@@ -230,7 +273,12 @@ class SlidingMFS:
 
         real_matrix = np.concatenate([np.concatenate([np.real(A), -np.imag(A)], axis=1),
                                       np.concatenate([np.imag(A), np.real(A)], axis=1)], axis=0)
+
+        if lam is not None:
+            penal = lam*np.eye(2*self.nsrc)
+            real_matrix += penal
         real_rhs = np.concatenate([-np.real(b), np.imag(b)])
+
         t2 = time.time()
         if verbose:
             print("Gram matrix computation took {:.3f} s".format(t2 - t1))
@@ -241,10 +289,10 @@ class SlidingMFS:
             print("Solving took {:.3f} s".format(t3 - t2))
         return self.ampl, np.linalg.cond(real_matrix)
 
-    def mfs_fit(self, solver='lstsq'):
+    def mfs_fit(self, solver='lstsq', **kwargs):
         self.ampl, mat = solve(self.beta, self.normvec, self.bound, self.boundv, self.pos_src, self.k,
-                               cond=self.cond, method=solver, return_mat=True).squeeze()
-
+                               cond=self.cond, method=solver, return_mat=True, **kwargs)
+        self.ampl = self.ampl.squeeze()
         return self.ampl, np.linalg.cond(mat)
 
     def neumann_operator(self, a, x):

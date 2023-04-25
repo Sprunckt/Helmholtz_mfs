@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as colors
 from utils import plot_boundary, Polygon, sample_polygon_rounded, Ellipse
-from mfs import compute_sol, solve, neumann_operator, SlidingMFS, robin_operator, fundamental_solution, fundamental_solution_derivative
+from mfs import compute_sol, solve, neumann_operator, SlidingMFS, robin_operator, dirichlet_operator
 
 import pyroomacoustics as pra
 std_off = pra.constants.get("frac_delay_length") // 2
@@ -22,8 +22,10 @@ kwargs = {}
 
 if bound_cond == "neumann":
     op = neumann_operator
-else:
+elif bound_cond == "robin":
     op = robin_operator
+else:
+    op = dirichlet_operator
 
 if test_type in ["comsol_polygon", "distance_polygon", "sliding_polygon"]:
     vertices = np.array([[2.2, 0], [4.3, 0.], [5.7, 1.9], [3.3, 5.1], [1.7, 5.5], [-0.75, 2.75]])
@@ -33,6 +35,7 @@ else:
     pos_src = np.array([[2.5, 2.5]])
 
 poly = Polygon(vertices)
+print("Perimeter: {}".format(np.sum(poly.lengths)))
 distribution = "uniform"
 
 
@@ -61,36 +64,43 @@ def plot_bound_values(op, coeff, sourcesv, coeffs_id, show=True, name="", plot3d
         ax2.set_title("Imaginary part, mean error={:3f}".format(error_imag))
         ax2.plot(plot_nodes[:, 0], plot_nodes[:, 1], np.imag(mfs_val), label="MFS")
         ax2.plot(plot_nodes[:, 0], plot_nodes[:, 1], np.imag(src_val), '--', label="Source contribution")
+
         for ax in [ax1, ax2]:             # plot the polygon on the z=0 plane
             ax.plot(poly.vertices[:, 0], poly.vertices[:, 1], np.zeros(poly.nedges), 'k')
             ax.plot([poly.vertices[0, 0], poly.vertices[-1, 0]],
                     [poly.vertices[0, 1], poly.vertices[-1, 1]], [0, 0.], 'k')
+        # set equal aspect ratio for the 3d plot
+        max_val = np.max(np.abs(plot_nodes), axis=0)
+        min_val = np.min(np.abs(plot_nodes), axis=0)
+        ax1.set_xlim([min_val[0], max_val[0]]), ax1.set_ylim([min_val[1], max_val[1]])
+        ax2.set_xlim([min_val[0], max_val[0]]), ax2.set_ylim([min_val[1], max_val[1]])
         plt.legend()
 
     else:
         fig, ax = plt.subplots(2, 2, figsize=(20, 6))
-        ax[0].set_ylim([np.min(src_val.real), np.max(src_val.real)])
-        ax[1].set_ylim([np.min(src_val.imag), np.max(src_val.imag)])
+        ax[0, 0].set_ylim([np.min(src_val.real), np.max(src_val.real)])
+        ax[0, 1].set_ylim([np.min(src_val.imag), np.max(src_val.imag)])
 
-        ax[0].set_title("Real part, nsrc={}, mean error={:3f}".format(npo, error_real))
-        ax[1].set_title("Imaginary part, mean error={:3f}".format(error_imag))
-        ax[0].plot(np.real(mfs_val), label="MFS")
-        ax[0].plot(np.real(src_val), '--', label="Source contribution")
-        ax[1].plot(np.imag(mfs_val), label="MFS")
-        ax[1].plot(np.imag(src_val), '--', label="Source contribution")
+        ax[0, 0].set_title("Real part, nsrc={}, mean error={:3f}".format(npo, error_real))
+        ax[0, 1].set_title("Imaginary part, mean error={:3f}".format(error_imag))
+        ax[0, 0].plot(np.real(mfs_val), label="MFS")
+        ax[0, 0].plot(np.real(src_val), '--', label="Source contribution")
+        ax[0, 1].plot(np.imag(mfs_val), label="MFS")
+        ax[0, 1].plot(np.imag(src_val), '--', label="Source contribution")
         # add vertical bars at each edge change
-        ax[0].vlines(edges, np.min(src_val.real), np.max(src_val.real), colors="k", linestyles="dashed")
-        ax[1].vlines(edges, np.min(src_val.imag), np.max(src_val.imag), colors="k", linestyles="dashed")
+        ax[0, 1].vlines(edges, np.min(src_val.real), np.max(src_val.real), colors="k", linestyles="dashed")
+        ax[0, 1].vlines(edges, np.min(src_val.imag), np.max(src_val.imag), colors="k", linestyles="dashed")
         plt.legend()
         plt.tight_layout()
 
     # add a subplot under both plots to show the coefficients
     ax3 = fig.add_subplot(212)
     ax3.set_title("Coefficients")
-    ax3.plot(coeff.real, '.', label="real part")
-    ax3.plot(coeff.imag, '.', label="imaginary part")
+    ax3.semilogy(np.abs(coeff.real), '.', label="real part")
+    ax3.semilogy(np.abs(coeff.imag), '.', label="imaginary part")
     # plot a vline at each edge change (given by value changes in coeffs_id)
-    ax3.vlines(np.where(np.diff(coeffs_id) != 0)[0], np.min(coeff), np.max(coeff), colors="k", linestyles="dashed")
+    ax3.vlines(np.where(np.diff(coeffs_id) != 0)[0], np.minimum(np.min(coeff.real), np.min(coeff.imag)),
+               np.maximum(np.max(coeff.real), np.max(coeff.imag)), colors="k", linestyles="dashed")
     plt.legend()
     if show:
         plt.show()
@@ -148,7 +158,7 @@ if test_type == "convergence":
                 ax[1].set_title('MFS')
                 plt.show()
             if plot_bound_cond:
-                plot_bound_values(op, alpha, smfs.boundv, show=True)
+                plot_bound_values(op, alpha, smfs.boundv, coeffs_id=smfs.boundv_ids, show=True, plot3d=True)
     # do a linear regression on the log-log plot
     log_nb_bound = np.log(nb_bound)
     log_l2_error, log_l2_rel_error = np.log(conditions), np.log(l2_rel_error)
@@ -174,12 +184,10 @@ elif test_type == "comsol_polygon":
     # extracting frequencies from keys
     freqs = np.loadtxt("data/freqs_polygon.txt", dtype=float)[:1]
     print("frequency list :", freqs)
-
-    points, fem_data = fem_data[:, :2], fem_data[:, 2:]
+    points, fem_data = np.real(fem_data[:, :2]), fem_data[:, 2:]
     skip_len = 1500
     points, fem_data = points[::skip_len, :], fem_data[::skip_len, :]
     print("Number of data points: ", len(points))
-    boundary_cond = "neumann"
     npoints = [1500, 2000, 2500, 3000]
     l2_comsol_mfs = np.zeros((len(npoints), len(freqs)))
     conditions = np.zeros((len(npoints), len(freqs)))
@@ -198,15 +206,15 @@ elif test_type == "comsol_polygon":
             alpha, conditions[indp, indf] = smfs.gram_fit()  # solve the system
             sol = compute_sol(smfs.ampl, points, smfs.boundv, k, pos_src)
             print("Done")
-            print("min and max values : ", np.min(alpha), np.max(alpha))
+            print("min and max values : r part {},{} ; i part {},{} ".format(np.min(alpha.real), np.max(alpha.real),
+                                                                             np.min(alpha.imag), np.max(alpha.imag)))
 
             if plot_sol:
-                val = np.linspace(np.min(data_val), np.max(data_val), 100)
+                val = np.linspace(np.min(np.real(data_val)), np.max(np.real(data_val)), 100)
                 val2 = np.linspace(np.min(np.real(sol)), np.max(np.real(sol)), 100)
 
                 fig, ax = plt.subplots(1, 3)
-
-                ax[0].tricontourf(points[:, 0], points[:, 1], data_val, val)
+                ax[0].tricontourf(points[:, 0], points[:, 1], np.real(data_val), levels=val)
                 ax[1].tricontourf(points[:, 0], points[:, 1], np.real(sol), val2)
                 rel_error = np.abs((np.real(sol) - data_val) / (data_val + 1e-16))
                 rel_error[rel_error > 2] = 2
@@ -217,12 +225,11 @@ elif test_type == "comsol_polygon":
                 plt.show()
             if plot_bound_cond:
                 if bound_cond == "robin":
-                    kwargs = {"beta": smfs.beta}
+                    kwargs["beta"] = smfs.beta
 
-                plot_bound_values(op, alpha, smfs.boundv, show=False,
-                                  name="poly_cg_500_uniform_mean.png", **kwargs)
-
-            l2_comsol_mfs[indp, indf] = np.linalg.norm(np.real(sol) - data_val) / np.linalg.norm(data_val)
+                plot_bound_values(op, alpha, smfs.boundv, coeffs_id=smfs.boundv_ids, show=True, plot3d=True,
+                                  name="poly_dir_lsqr_500_uniform_mean.png", **kwargs)
+            l2_comsol_mfs[indp, indf] = np.linalg.norm(sol - data_val) / np.linalg.norm(data_val)
             print("l2 error :", l2_comsol_mfs[indp, indf])
 
     fig, ax = plt.subplots(1, 2, figsize=(12, 6))
@@ -449,7 +456,8 @@ if test_type == "sliding_polygon":
 
                 plt.show()
             if plot_bound_cond:
-                plot_bound_values(alpha, smfs.boundv, show=False, name="lstsq_500_uniform_mdist2001")
+                plot_bound_values(alpha, smfs.boundv, show=False, coeffs_id=smfs.boundv_ids,
+                                  name="lstsq_500_uniform_mdist2001")
 
             l2_comsol_mfs[indp, indf] = np.linalg.norm(np.real(sol) - data_val) / np.linalg.norm(data_val)
             print("l2 error :", l2_comsol_mfs[indp, indf])

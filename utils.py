@@ -66,39 +66,6 @@ def sample_polygon(npoints, vertices, distribution="linear"):
     return boundary, normal / np.linalg.norm(normal, axis=1)[:, np.newaxis]
 
 
-def sample_polygon_rounded(npoints, vertices, radius):
-    """Sample on an enlarged version of the polygon (boundary translated by radius in the normal direction), with
-    rounded edges."""
-    # compute number of points for each edge and rounded corner
-    lengths = np.zeros(2*len(vertices))
-    lengths[::2] = np.linalg.norm(vertices - np.roll(vertices, -1, axis=0), axis=1)
-    normals = np.roll(vertices, -1, axis=0) - vertices
-    normals = np.stack([normals[:, 1], -normals[:, 0]], axis=1)
-    normals /= np.linalg.norm(normals, axis=1)[:, np.newaxis]
-
-    # add rounded corners, ponderate each corner by angle
-    angles = np.arccos(np.sum(normals * np.roll(normals, -1, axis=0), axis=1))
-    lengths[1::2] = np.roll(angles, 1) * radius
-    lengths /= np.sum(lengths)
-    lengths = np.round(lengths * npoints).astype(int)
-    lengths[-1] += npoints - np.sum(lengths)
-
-    boundary = np.zeros((npoints, 2))
-    indstart = 0
-    for i in range(len(lengths)):
-        le = lengths[i]
-        v1, v2 = vertices[i//2], vertices[(i//2 + 1) % len(vertices)]
-        if i % 2 == 0:
-            edge = v2 - v1
-            boundary[indstart:indstart + le, :] = v1 + normals[i//2]*radius + edge*chebyshev_nodes(0, 1, le)[:, np.newaxis]
-        else:
-            vect1, vect2 = normals[i//2-1],  normals[i//2]
-            boundary[indstart:indstart + le, :] = sample_points_on_circle(v1, radius, vect1, vect2, le+2)[1:-1, :]
-        indstart += le
-
-    return boundary
-
-
 def sample_points_on_circle(center, radius, start_vec, end_vec, num_points):
     # Compute the start and end angles of the circular arc
     start_vec = start_vec / np.linalg.norm(start_vec)
@@ -211,16 +178,30 @@ class Polygon:
         self.normals = np.stack([edges[:, 1], -edges[:, 0]], axis=1)
         self.normals /= np.linalg.norm(self.normals, axis=1)[:, np.newaxis]
         self.nedges = len(vertices)
-        self.lengths = np.linalg.norm(np.roll(vertices, -1, axis=0) - vertices, axis=1)
+        self.lengths = np.linalg.norm(np.roll(vertices, -1, axis=0) - vertices, axis=1)  # length of each edge
+        # compute angles between edges
+        self.angles = np.zeros(self.nedges)
+        for i in range(self.nedges):
+            self.angles[i] = np.pi - np.arccos(np.dot(edges[i], edges[(i + 1) % self.nedges]) /
+                                       (self.lengths[i] * self.lengths[(i + 1) % self.nedges]))
+
+    def enlarge(self, factor):
+        """Enlarge the polygon by a factor, by moving the vertices along their normals."""
+        barycenter = np.mean(self.vertices, axis=0)
+        vertices_shifted = self.vertices - barycenter
+        self.vertices = vertices_shifted * factor + barycenter
 
     def sample_edge(self, n, edge_id, distribution='uniform', min_dist=None, return_nodes=False):
         if distribution == "uniform":
             if min_dist is None:
                 nodes = np.linspace(0, 1, n + 2)[1:-1]
             else:
-                nodes = np.linspace(min_dist, 1 - min_dist, n, endpoint=True)
+                relative_dist = min_dist / self.lengths[edge_id]
+                nodes = np.linspace(relative_dist, 1 - relative_dist, n, endpoint=True)
+
         else:
             nodes = chebyshev_nodes(0, 1, n)
+
         v1, v2 = self.vertices[edge_id], self.vertices[(edge_id + 1) % self.nedges]
         res = v1 + nodes[:, np.newaxis]*(v2 - v1)
 
@@ -255,6 +236,39 @@ class Polygon:
             res += (params,)
 
         return res
+
+    def sample_rounded(self, npoints, radius):
+        """Sample on an enlarged version of the polygon (boundary translated by radius in the normal direction), with
+            rounded edges."""
+        # compute number of points for each edge and rounded corner
+        lengths = np.zeros(2 * len(self.vertices))
+        lengths[::2] = np.linalg.norm(self.vertices - np.roll(self.vertices, -1, axis=0), axis=1)
+        normals = np.roll(self.vertices, -1, axis=0) - self.vertices
+        normals = np.stack([normals[:, 1], -normals[:, 0]], axis=1)
+        normals /= np.linalg.norm(normals, axis=1)[:, np.newaxis]
+
+        # add rounded corners, ponderate each corner by angle
+        angles = np.arccos(np.sum(normals * np.roll(normals, -1, axis=0), axis=1))
+        lengths[1::2] = np.roll(angles, 1) * radius
+        lengths /= np.sum(lengths)
+        lengths = np.round(lengths * npoints).astype(int)
+        lengths[-1] += npoints - np.sum(lengths)
+
+        boundary = np.zeros((npoints, 2))
+        indstart = 0
+        for i in range(len(lengths)):
+            le = lengths[i]
+            v1, v2 = self.vertices[i // 2], self.vertices[(i // 2 + 1) % len(self.vertices)]
+            if i % 2 == 0:
+                edge = v2 - v1
+                boundary[indstart:indstart + le, :] = v1 + normals[i // 2] * radius + edge * np.linspace(0, 1, le)[
+                                                                                             :, np.newaxis]
+            else:
+                vect1, vect2 = normals[i // 2 - 1], normals[i // 2]
+                boundary[indstart:indstart + le, :] = sample_points_on_circle(v1, radius, vect1, vect2, le + 2)[1:-1, :]
+            indstart += le
+
+        return boundary
 
     def is_out(self, points, min_dist=0.0):
         """Check if points (shape (npoints, d)) are outside and at a distance superior to min_dist of a (not necessarily

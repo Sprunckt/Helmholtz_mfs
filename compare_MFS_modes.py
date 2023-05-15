@@ -39,7 +39,7 @@ print("Perimeter: {}".format(np.sum(poly.lengths)))
 distribution = "uniform"
 
 
-def plot_bound_values(op, coeff, sourcesv, coeffs_id, show=True, name="", plot3d=False, **kwargs):
+def plot_bound_values(op, coeff, sourcesv, coeffs_id, k, show=True, name="", plot3d=False, **kwargs):
     mfs_val, src_val, edges, plot_nodes = [], [], [t*nplot for t in range(1, poly.nedges)], []
     for j in range(poly.nedges):
         plot_nodes.append(poly.sample_edge(nplot, j, distribution="uniform"))
@@ -48,8 +48,9 @@ def plot_bound_values(op, coeff, sourcesv, coeffs_id, show=True, name="", plot3d
         src_val.append(op(plot_nodes[-1], norms, np.array([-1.]), np.reshape(pos_src, (1, -1)), k, **kwargs))
 
     mfs_val, src_val = np.concatenate(mfs_val), np.concatenate(src_val)
-    error_real = np.mean(np.abs(np.real(mfs_val) - np.real(src_val)))
-    error_imag = np.mean(np.abs(np.imag(mfs_val) - np.imag(src_val)))
+    # add_contr = np.concatenate(add_contr)
+    error_real = np.sqrt(np.mean(np.abs(np.real(mfs_val) - np.real(src_val))**2))
+    error_imag = np.sqrt(np.mean(np.abs(np.imag(mfs_val) - np.imag(src_val))**2))
 
     if plot3d:
         plot_nodes = np.concatenate(plot_nodes, axis=0)
@@ -81,14 +82,18 @@ def plot_bound_values(op, coeff, sourcesv, coeffs_id, show=True, name="", plot3d
         ax[0, 0].set_ylim([np.min(src_val.real), np.max(src_val.real)])
         ax[0, 1].set_ylim([np.min(src_val.imag), np.max(src_val.imag)])
 
-        ax[0, 0].set_title("Real part, nsrc={}, mean error={:3f}".format(npo, error_real))
+        ax[0, 0].set_title("Real part, nsrc={}, mean error={:3f}".format(len(coeff), error_real))
         ax[0, 1].set_title("Imaginary part, mean error={:3f}".format(error_imag))
         ax[0, 0].plot(np.real(mfs_val), label="MFS")
         ax[0, 0].plot(np.real(src_val), '--', label="Source contribution")
         ax[0, 1].plot(np.imag(mfs_val), label="MFS")
         ax[0, 1].plot(np.imag(src_val), '--', label="Source contribution")
+
+        # add horizontal line at 0
+        ax[0, 0].plot([0, len(mfs_val)], [0, 0], 'k')
+        ax[0, 1].plot([0, len(mfs_val)], [0, 0], 'k')
         # add vertical bars at each edge change
-        ax[0, 1].vlines(edges, np.min(src_val.real), np.max(src_val.real), colors="k", linestyles="dashed")
+        ax[0, 0].vlines(edges, np.min(src_val.real), np.max(src_val.real), colors="k", linestyles="dashed")
         ax[0, 1].vlines(edges, np.min(src_val.imag), np.max(src_val.imag), colors="k", linestyles="dashed")
         plt.legend()
         plt.tight_layout()
@@ -127,13 +132,13 @@ if test_type == "convergence":
         for itp, npo in enumerate(nb_bound):
 
             print("fitting for frequency {} Hz with {} sources".format(fs, npo))
-            smfs = SlidingMFS(nbound=npo, nsrc=500, nobs=200, pos_src=pos_src, k=k, poly=poly, dx=dx,
+            smfs = SlidingMFS(nbound=npo, nsrc=npo, nobs=200, pos_src=pos_src, k=k, poly=poly, dx=dx,
                               cond=bound_cond, beta=beta)
-            alpha, conditions[itf, itp] = smfs.gram_fit()
 
             if plot_bound:  # plot boundary
                 plot_boundary(smfs.bound, smfs.normvec, smfs.boundv, pos_src)
 
+            alpha, conditions[itf, itp] = smfs.mfs_fit()
             print("min and max values : ", np.min(alpha), np.max(alpha))
 
             print("Computing solution".format(fs, npo))
@@ -157,8 +162,11 @@ if test_type == "convergence":
                 ax[0].set_title('Analytical')
                 ax[1].set_title('MFS')
                 plt.show()
+            if bound_cond == "robin":
+                kwargs["beta"] = smfs.beta
             if plot_bound_cond:
-                plot_bound_values(op, alpha, smfs.boundv, coeffs_id=smfs.boundv_ids, show=True, plot3d=True)
+                plot_bound_values(op, alpha, smfs.boundv, coeffs_id=smfs.boundv_ids, k=k,
+                                  show=True, plot3d=True, **kwargs)
     # do a linear regression on the log-log plot
     log_nb_bound = np.log(nb_bound)
     log_l2_error, log_l2_rel_error = np.log(conditions), np.log(l2_rel_error)
@@ -201,6 +209,11 @@ elif test_type == "comsol_polygon":
             smfs = SlidingMFS(nbound=npo, nsrc=500, nobs=200, pos_src=pos_src, k=k, poly=poly,
                               dx=dx, cond=bound_cond, beta=beta)
 
+            smfs = SlidingMFS(nbound=npo, nsrc=50, nobs=200, pos_src=pos_src, k=k, poly=poly,
+                              dx=dx, cond=bound_cond, beta=beta, src_nb="per_wavelength")
+            print("Solving for frequency {} Hz with {} sources".format(f, smfs.nsrc))
+
+            # smfs.boundv = pos
             if plot_bound:  # plot boundary
                 plot_boundary(smfs.bound, smfs.normvec, smfs.boundv, smfs.pos_src)
             alpha, conditions[indp, indf] = smfs.gram_fit()  # solve the system
@@ -227,7 +240,7 @@ elif test_type == "comsol_polygon":
                 if bound_cond == "robin":
                     kwargs["beta"] = smfs.beta
 
-                plot_bound_values(op, alpha, smfs.boundv, coeffs_id=smfs.boundv_ids, show=True, plot3d=True,
+                plot_bound_values(op, alpha, smfs.boundv, coeffs_id=smfs.boundv_ids, k=k, show=True, plot3d=True,
                                   name="poly_dir_lsqr_500_uniform_mean.png", **kwargs)
             l2_comsol_mfs[indp, indf] = np.linalg.norm(sol - data_val) / np.linalg.norm(data_val)
             print("l2 error :", l2_comsol_mfs[indp, indf])
@@ -466,4 +479,81 @@ if test_type == "sliding_polygon":
     for i in range(len(freqs)):
         ax.loglog(npoints, l2_comsol_mfs[:, i], label=str(freqs[i]) + ' Hz')
     plt.legend()
+    plt.show()
+
+elif test_type == "eigen_frequencies":
+    # plot the determinant of the homogeneous system for different frequencies
+    min_freqr, max_freqr, nfreqr = 99.75, 100, 300
+    min_freqi, max_freqi, nfreqi = 0, 10, 25
+
+    det_vals = []
+    smfs = SlidingMFS(nbound=250, nsrc=250, nobs=200, pos_src=pos_src, k=2 * np.pi * 100 / 343, poly=poly, dx=dx,
+                      beta=beta, cond=bound_cond)
+
+    if bound_cond in ["neumann", "dirichlet"]:
+        freqs = np.linspace(min_freqr, max_freqr, nfreqr)
+
+        for indf, f in enumerate(freqs):
+            print("frequency : ", f)
+            smfs.k = 2 * np.pi * f / 343
+            _, det = smfs.mfs_fit(stat='sing', source_type='none')
+            print("max ampl:{}, det: {}".format(np.max(np.abs(smfs.ampl)), np.abs(det)))
+            det_vals.append(np.log(det))
+
+        det_vals = np.stack(det_vals, axis=0)
+        plt.plot(freqs, det_vals)
+    elif bound_cond == "robin":
+        freqsx, freqsy = np.meshgrid(np.linspace(min_freqr, max_freqr, nfreqr), np.linspace(min_freqi, max_freqi, nfreqi))
+        nfreq = nfreqr * nfreqi
+        det_vals = np.zeros(nfreq)
+        freqs = np.concatenate([freqsx.reshape(-1, 1), freqsy.reshape(-1, 1)], axis=1)
+        for indf in range(nfreq):
+            smfs.k = 2 * np.pi * (freqs[indf, 0] + 1j*freqs[indf, 1]) / 343
+            _, det = smfs.mfs_fit(stat='sing', source_type='none')
+            print("max ampl:{}, det: {}".format(np.max(np.abs(smfs.ampl)), np.abs(det)))
+            det_vals[indf] = np.log(det)
+        det_vals = np.reshape(det_vals, freqsx.shape)
+        plt.imshow(det_vals, extent=[min_freqr, max_freqr, min_freqi, max_freqi], origin='lower', aspect='auto')
+        plt.colorbar()
+    plt.show()
+
+elif test_type == "mean_border_error":
+    min_freq, max_freq, nfreq = 98, 101, 300
+    freqs = np.linspace(min_freq, max_freq, nfreq)
+    mean_border_error, sing = [], []
+    smfs = SlidingMFS(nbound=500, nsrc=500, nobs=200, pos_src=pos_src, k=0., poly=poly, dx=dx, beta=beta,
+                      cond=bound_cond)
+
+    plot_nodes = []
+    for j in range(poly.nedges):
+        plot_nodes.append(poly.sample_edge(nplot, j, distribution="uniform"))
+
+    for indf, f in enumerate(freqs):
+        smfs.k = 2 * np.pi * f / 343
+        alpha, s = smfs.mfs_fit(stat="sing")
+        sing.append(np.abs(s))
+
+        src_norm = 0.
+        error_norm = 0.
+        mfs_val, src_val = [], []
+        for j in range(poly.nedges):
+            edge_step = np.linalg.norm(plot_nodes[j][1] - plot_nodes[j][0])
+            mfs_val.append(smfs.boundary_operator(plot_nodes[j], np.repeat(j, nplot)))
+
+            src_val.append(-smfs.boundary_operator(plot_nodes[j], np.repeat(j, nplot), use_src=True))
+
+            src_norm += np.sum(np.real(src_val[-1])**2) * edge_step
+            error_norm += np.sum(np.real(mfs_val[-1] - src_val[-1])**2) * edge_step
+        mfs_val = np.concatenate(mfs_val, axis=0)
+
+        mean_border_error.append(np.sqrt(error_norm / src_norm))
+        print("frequency: ", f, " error:", mean_border_error[-1])
+
+    nfreq_eig = 300
+    freqs_eig = np.linspace(min_freq, max_freq, nfreq_eig)
+
+    plt.plot(freqs, mean_border_error)
+    # plot on same plot with different scale
+    ax2 = plt.gca().twinx()
+    ax2.plot(freqs_eig, sing, color="red")
     plt.show()

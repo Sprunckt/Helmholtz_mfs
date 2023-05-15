@@ -191,13 +191,20 @@ class Polygon:
         vertices_shifted = self.vertices - barycenter
         self.vertices = vertices_shifted * factor + barycenter
 
-    def sample_edge(self, n, edge_id, distribution='uniform', min_dist=None, return_nodes=False):
+    def sample_edge(self, n, edge_id, distribution='uniform', sample_type="total", min_dist=None, return_nodes=False):
         if distribution == "uniform":
             if min_dist is None:
-                nodes = np.linspace(0, 1, n + 2)[1:-1]
+                if sample_type == "total":
+                    nodes = np.linspace(0, 1, n + 2)[1:-1]
+                else:  # n is the step
+                    nodes = np.arange(0, 1, n)[1:]
             else:
                 relative_dist = min_dist / self.lengths[edge_id]
-                nodes = np.linspace(relative_dist, 1 - relative_dist, n, endpoint=True)
+
+                if sample_type == "total":
+                    nodes = np.linspace(relative_dist, 1 - relative_dist, n, endpoint=True)
+                else:  # n is the step
+                    nodes = np.arange(relative_dist, 1 - relative_dist, n / self.lengths[edge_id])
 
         else:
             nodes = chebyshev_nodes(0, 1, n)
@@ -210,26 +217,36 @@ class Polygon:
         else:
             return res
 
-    def sample(self, npoints, distribution='uniform', min_dist=None, return_ids=False, return_nodes=False):
-        lengths = self.lengths / np.sum(self.lengths)
-        lengths = np.round(lengths * npoints).astype(int)
-        lengths[-1] += npoints - np.sum(lengths)
-        boundary, normals = np.zeros((npoints, 2)), np.zeros((npoints, 2))
-        indstart = 0
-        ids, params = np.zeros(npoints, dtype=int), []
+    def sample(self, npoints, distribution='uniform', min_dist=None, sample_type="total",
+               return_ids=False, return_nodes=False):
+        if sample_type == 'total':
+            lengths = self.lengths / np.sum(self.lengths)
+            lengths = np.round(lengths * npoints).astype(int)
+            lengths[-1] += npoints - np.sum(lengths)
+        else:  # minimum distance between points
+            n = npoints
+
+        boundary, normals, ids, params = [], [], [], []
         for i in range(self.nedges):
-            n = lengths[i]
-            normals[indstart:indstart + n] = self.normals[i]
-            boundary[indstart:indstart + n], nodes = self.sample_edge(n, i, distribution,
-                                                                      min_dist=min_dist, return_nodes=True)
-            indstart += n
+            if sample_type == 'total':
+                n = lengths[i]
+
+            boundary_edge, nodes = self.sample_edge(n, i, distribution, sample_type=sample_type,
+                                                    min_dist=min_dist, return_nodes=True)
+
+            boundary.append(boundary_edge)
+            npb = len(nodes)
+            normals.append(np.repeat(self.normals[i].reshape([1, -1]), npb, axis=0))
             if return_ids:
-                ids[indstart - n:indstart] = i
+                ids.append([i]*npb)
             if return_nodes:
                 params.append(nodes)
 
+        boundary = np.concatenate(boundary, axis=0)
+        normals = np.concatenate(normals, axis=0)
         res = (boundary, normals)
         if return_ids:
+            ids = np.concatenate(ids)
             res += (ids,)
         if return_nodes:
             params = np.concatenate(params)
@@ -237,7 +254,7 @@ class Polygon:
 
         return res
 
-    def sample_rounded(self, npoints, radius):
+    def sample_rounded(self, npoints, radius, factor=1, one_per_corner=False):
         """Sample on an enlarged version of the polygon (boundary translated by radius in the normal direction), with
             rounded edges."""
         # compute number of points for each edge and rounded corner
@@ -247,11 +264,17 @@ class Polygon:
         normals = np.stack([normals[:, 1], -normals[:, 0]], axis=1)
         normals /= np.linalg.norm(normals, axis=1)[:, np.newaxis]
 
-        # add rounded corners, ponderate each corner by angle
-        angles = np.arccos(np.sum(normals * np.roll(normals, -1, axis=0), axis=1))
-        lengths[1::2] = np.roll(angles, 1) * radius
-        lengths /= np.sum(lengths)
-        lengths = np.round(lengths * npoints).astype(int)
+        if one_per_corner:
+            lengths[1::2] = 1
+            lengths[::2] = np.round(lengths[::2]/np.sum(lengths[::2]) * (npoints-self.nedges))
+            lengths = np.round(lengths).astype(int)
+        else:
+            # add rounded corners, ponderate each corner by angle
+            angles = np.arccos(np.sum(normals * np.roll(normals, -1, axis=0), axis=1))
+            lengths[1::2] = np.roll(angles, 1) * radius * factor
+            lengths /= np.sum(lengths)
+            lengths = np.round(lengths * npoints).astype(int)
+
         lengths[-1] += npoints - np.sum(lengths)
 
         boundary = np.zeros((npoints, 2))
@@ -290,6 +313,20 @@ class Polygon:
         corresponding coordinates in 2D"""
         v1, v2 = self.vertices[edge_id], self.vertices[(edge_id + 1) % self.nedges]
         return v1 + param[:, np.newaxis] * (v2 - v1)
+
+    def get_image_source(self, pos):
+        """Return the image source corresponding to the positions pos (shape (npoints, 2)) with respect to each edge of
+        the polygon. Return an array of shape (npoints*nedges, 2)."""
+        res = np.zeros((pos.shape[0] * self.nedges, 2))
+        for i in range(self.nedges):
+            # compute distance from each pos to each edge of the polygon
+            v1, v2 = self.vertices[i], self.vertices[(i + 1) % self.nedges]
+            vect = v2 - v1
+            dist = np.sum((pos - v1) * vect, axis=1)
+            proj = v1 + dist[:, np.newaxis] * vect / np.sum(vect ** 2)
+            # compute image source
+            res[i * pos.shape[0]:(i + 1) * pos.shape[0], :] = proj + np.linalg.norm(proj - pos, axis=1)[:, np.newaxis] * self.normals[i]
+        return res
 
 
 class Ellipse:

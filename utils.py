@@ -179,11 +179,14 @@ class Polygon:
         self.normals /= np.linalg.norm(self.normals, axis=1)[:, np.newaxis]
         self.nedges = len(vertices)
         self.lengths = np.linalg.norm(np.roll(vertices, -1, axis=0) - vertices, axis=1)  # length of each edge
-        # compute angles between edges
-        self.angles = np.zeros(self.nedges)
-        for i in range(self.nedges):
-            self.angles[i] = np.pi - np.arccos(np.dot(edges[i], edges[(i + 1) % self.nedges]) /
-                                       (self.lengths[i] * self.lengths[(i + 1) % self.nedges]))
+
+        edges /= self.lengths[:, np.newaxis]
+        self.edges = edges
+        # compute inner angles
+        dotprod = np.sum(-np.roll(edges, 1, axis=0) * edges, axis=1)
+        sin_sign = -np.sign(np.cross(-np.roll(edges, 1, axis=0), edges))
+        self.angles = np.arccos(dotprod)
+        self.angles = np.where(sin_sign < 0, 2*np.pi - self.angles, self.angles)
 
     def enlarge(self, factor):
         """Enlarge the polygon by a factor, by moving the vertices along their normals."""
@@ -327,6 +330,18 @@ class Polygon:
             # compute image source
             res[i * pos.shape[0]:(i + 1) * pos.shape[0], :] = proj + np.linalg.norm(proj - pos, axis=1)[:, np.newaxis] * self.normals[i]
         return res
+
+    def compute_angles(self, points):
+        """Compute polar angles of points with respect to the vertices of the polygon, using the next edge (in
+        trigonometric order) as polar axis. Return angles and vectors from vertices to points."""
+        diffs = points[:, np.newaxis] - self.vertices[np.newaxis, :]  # shape (npoints, nvertices, 2)
+        # angles = np.arctan2(diffs[:, :, 1], diffs[:, :, 0]) - self.edge_slope[np.newaxis, :]
+        dotprod = np.sum(diffs * self.edges[np.newaxis, :, :], axis=-1)  # shape (npoints, nvertices)
+        norms = np.linalg.norm(diffs, axis=2)
+        sin_sign = -np.sign(np.cross(diffs / norms[:, :, np.newaxis], self.edges[np.newaxis, :, :], axis=-1))
+        angles = np.arccos(np.clip(dotprod / norms, -1, 1))
+        angles = np.where(sin_sign < 0, 2 * np.pi - angles, angles)
+        return angles, diffs, norms
 
 
 class Ellipse:

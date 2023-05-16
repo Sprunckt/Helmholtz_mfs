@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.special import hankel1
+from scipy.special import hankel1, jv
 from sklearn.linear_model import Ridge
 from scipy.sparse.linalg import gmres
 from utils import Polygon
@@ -7,6 +7,7 @@ from scipy.optimize import minimize
 from scipy.integrate import simpson
 from scipy.sparse.linalg import cg
 import time
+import matplotlib.pyplot as plt
 
 
 def fundamental_solution(points, sources, k):
@@ -18,6 +19,19 @@ def fundamental_solution_derivative(dist, k):
     """Compute the derivative of the fundamental solution at the points given the distances,
     return a matrix of shape npoints, nsources."""
     return -(1j/4) * k * hankel1(1, k*dist)
+
+
+def particular_solution(dist, theta, k, mu):
+    return jv(mu, k*dist) * np.cos(mu*theta)
+
+
+def particular_solution_gradient(dist, theta, k, mu):
+    """Compute the gradient of the particular solution at the points given the distances, angles (both shape
+    (points, nsrc)) and wavenumber, return a matrix of shape (npoints, nsources, 2)."""
+    dr = k*(jv(mu-1, k*dist) - jv(mu+1, k*dist))
+    dtheta = -mu*np.sin(mu*theta)
+    ctheta, stheta = np.cos(theta), np.sin(theta)
+    return np.stack([dr*ctheta - stheta*dtheta/dist, dr*stheta + ctheta*dtheta/dist], axis=-1)
 
 
 def compute_sol(alpha, points, sourcesv, k, source=None, decouple=False):
@@ -201,7 +215,8 @@ def dirichlet_operator(points, _, alpha, sourcesv, k):
 
 class SlidingMFS:
     def __init__(self, nbound: int, nsrc: int, nobs: int, pos_src: np.ndarray, poly: Polygon,
-                 k: float, dx: float = None, cond='neumann', lam=0., sample_kwargs=None, beta=None, src_nb='total'):
+                 k: float, dx: float = None, cond='neumann', lam=0., sample_kwargs=None, beta=None, src_nb='total',
+                 add_fun=0):
         self.dx = dx
         self.pos_src = pos_src
         self.poly = poly
@@ -227,8 +242,9 @@ class SlidingMFS:
             raise ValueError("src_nb must be 'total' or 'per_wavelength'")
         self.boundv = boundv + dx*self.normvecv
 
-        self.boundary_operator = self.neumann_operator  # only neumann boundary conditions implemented so far
-        self.y = self.boundary_operator(-np.ones(1), self.pos_src)
+        self.nsrc = len(self.boundv)
+
+        # self.boundv = poly.sample_rounded(self.nsrc, dx, factor=1, one_per_corner=True)
 
         if beta is None:
             self.beta = np.zeros(self.nbound)
@@ -236,6 +252,9 @@ class SlidingMFS:
             self.beta = beta*np.ones(self.nbound)
 
         self.ampl = np.zeros(self.nsrc, dtype=np.complex128)
+
+        self.add_fun = add_fun
+        self.factor = np.pi / self.poly.angles[np.newaxis, :]  # angular factor for particular solution
 
     def gram_fit(self, verbose=True, lam=None, decouple=False, lam_gradient=None):
         """Compute scalar products between fundamental solutions, use the boundary points as quadrature points"""
@@ -312,21 +331,106 @@ class SlidingMFS:
 
         return self.ampl, cond
 
-    def mfs_fit(self, solver='lstsq', stat="cond", **kwargs):
-        self.ampl, mat = solve(self.beta, self.normvec, self.bound, self.boundv, self.pos_src, self.k,
-                               cond=self.cond, method=solver, return_mat=True, **kwargs)
-        self.ampl = self.ampl.squeeze()
+    def mfs_fit(self, solver='lstsq', stat="cond"):
+
+        # assemble the system matrix and rhs
+        A = np.zeros((self.nbound, self.nsrc + self.add_fun*self.poly.nedges), dtype=complex)
+        b = np.zeros((self.nbound, 1), dtype=complex)
+
+        if self.cond == "neumann":
+            diffs = self.bound[:, np.newaxis, :] - self.boundv[np.newaxis, :, :]
+            norms = np.linalg.norm(diffs, axis=-1)
+
+            # (np, 2)*(np, npv, 2)->(np, npv)
+            scalar_prod = np.sum(self.normvec[:, np.newaxis, :] * diffs, axis=-1) / norms
+            A[:, :self.nsrc] = scalar_prod * fundamental_solution_derivative(norms, self.k)
+            diffs = self.bound[:, np.newaxis, :] - self.pos_src[np.newaxis, :, :]  # rhs computation
+            norms = np.linalg.norm(diffs, axis=-1)
+            b[:] = - (np.sum(self.normvec[:, np.newaxis, :] * diffs, axis=-1) *
+                      fundamental_solution_derivative(norms, self.k) / norms)
+
+            if self.add_fun > 0:
+                angles, diffs, norms = self.poly.compute_angles(self.bound)
+                print(np.min(norms))
+                factor = self.factor
+
+                indstart, indstop = self.nsrc, self.nsrc + self.poly.nedges
+                for t in range(self.add_fun):
+                    grad = particular_solution_gradient(norms, angles, self.k, t*factor)  # (np, nvertices, 2)
+                    A[:, indstart:indstop] = np.sum(grad * self.normvec[:, np.newaxis, :], axis=-1)
+                    indstart, indstop = indstop, indstop + self.poly.nedges
+
+        elif self.cond == "dirichlet":
+            A[:, :self.nsrc] = fundamental_solution(self.bound[:], self.boundv, self.k)
+            b[:] = - fundamental_solution(self.bound, self.pos_src, self.k)
+
+        elif self.cond == "robin":
+            diffs = self.bound[:, np.newaxis, :] - self.boundv[np.newaxis, :, :]
+            norms = np.linalg.norm(diffs, axis=-1)
+
+            # (np, 2)*(np, np, 2)-> (np, np)
+            A[:, :self.nsrc] = (np.sum(self.normvec[:, np.newaxis, :] * diffs, axis=-1) /
+                                norms * fundamental_solution_derivative(norms, self.k) +
+                                fundamental_solution(self.bound, self.boundv, self.k) *
+                                self.beta[:, np.newaxis] * 1j * self.k)
+
+            diffs = self.bound[:, np.newaxis, :] - self.pos_src[np.newaxis, :, :]
+            norms = np.linalg.norm(diffs, axis=-1)
+            b[:] = -(np.sum(self.normvec[:, np.newaxis, :] * diffs, axis=-1) *
+                     fundamental_solution_derivative(norms, self.k) / norms +
+                     fundamental_solution(self.bound, self.pos_src, self.k) * self.beta[:, np.newaxis] * 1j * self.k)
+
+        if solver == "direct":
+            res = np.linalg.solve(A, b)
+        elif solver == 'lstsq':
+            res = np.linalg.lstsq(A, b, rcond=-1)[0]
+        elif solver == "tsvd":
+            res = np.linalg.pinv(A) @ b
+        elif solver == "gmres":
+            res = gmres(A, b, tol=1e-8)[0]
+        elif solver == "ridge":
+            lasso_fitter = Ridge(alpha=1e-3, fit_intercept=False, tol=1e-8)
+            Ac1 = np.concatenate([np.real(A), -np.imag(A)], axis=1)
+            Ac2 = np.concatenate([np.imag(A), np.real(A)], axis=1)
+            A = np.concatenate([Ac1, Ac2], axis=0)
+            b = np.concatenate([np.real(b), np.imag(b)], axis=0)
+            scale = np.sqrt(len(A))  # rescaling factor for sklearn convention
+            lasso_fitter.fit(scale * A, scale * b)
+            res = lasso_fitter.coef_.flatten()
+            res = res[:self.nsrc] + 1j * res[self.nsrc:]
+        else:
+            raise ValueError("method must be 'direct', 'tsvd', 'lstsq', 'ridge' or 'gmres'")
+
+        self.ampl = res.squeeze()
         if stat == "cond":
-            stat = np.linalg.cond(mat)
+            stat = np.linalg.cond(A)
         elif stat == "det":
-            stat = np.linalg.det(mat)
+            stat = np.linalg.det(A)
         elif stat == "sing":  # smallest singular value
-            stat = np.linalg.svd(mat, compute_uv=False)[-1]
+            stat = np.linalg.svd(A, compute_uv=False)[-1]
         else:
             raise ValueError("Unknown stat")
         return self.ampl, stat
 
-    def boundary_operator(self, points, bound_ids, return_grad=False, use_src=False):
+    def evaluate_sol(self, points):
+        res = np.sum(fundamental_solution(points, self.boundv, self.k) * self.ampl[:self.nsrc].reshape(1, -1), axis=1)
+        res += np.reshape(fundamental_solution(points, self.pos_src, self.k), -1)
+
+        angles, diffs, norms = self.poly.compute_angles(points)
+        factor = self.factor
+        indstart, indstop = self.nsrc, self.nsrc + self.poly.nedges
+        for t in range(self.add_fun):
+            # if t == 4:
+            #     res = particular_solution(norms[:, 1], angles[:, 1], self.k, t * factor[0, 1])
+            #     break
+            res += np.sum(particular_solution(norms, angles, self.k, t*factor) *
+                          self.ampl[indstart:indstop].reshape(1, -1), axis=1)
+
+            indstart, indstop = indstop, indstop + self.poly.nedges
+
+        return res
+
+    def boundary_operator(self, points, bound_ids, use_src=False):
         normals = self.poly.normals[bound_ids]
         if use_src:
             pos = self.pos_src.reshape([1, -1])
@@ -335,14 +439,17 @@ class SlidingMFS:
             alpha = self.ampl
             pos = self.boundv
         if self.cond == 'neumann':
+            res = neumann_operator(points, normals, alpha[:self.nsrc], pos, self.k)
+            if self.add_fun > 0:
+                angles, diffs, norms = self.poly.compute_angles(points)
 
-            if return_grad:
-                res, diffs, norms = neumann_operator(points, normals, alpha, pos, self.k, return_diffs=True)
-                grad = np.sum(self.neumann_grad(diffs, norms, bound_ids)*alpha.reshape(1, -1), axis=1)
-
-                return res, grad
-            else:
-                return neumann_operator(points, normals, alpha, pos, self.k)
+                indstart, indstop = self.nsrc, self.nsrc + self.poly.nedges
+                for t in range(self.add_fun):
+                    grad = particular_solution_gradient(norms, angles, self.k, t*self.factor)  # (np, nvertices, 2)
+                    res += np.sum(np.sum(grad * normals[:, np.newaxis, :], axis=-1) *
+                                  self.ampl[indstart:indstop].reshape(1, -1), axis=1)
+                    indstart, indstop = indstop, indstop + self.poly.nedges
+            return res
         elif self.cond == 'dirichlet':
             return dirichlet_operator(points, None, alpha, pos, self.k)
         elif self.cond == 'robin':
@@ -377,3 +484,74 @@ class SlidingMFS:
             val_ini = self.cost_function(ini)
             print("Optimization result: {} {}".format(opti_res.success, opti_res.message))
             print("Initial/final values: {} {}".format(val_ini, opti_res.fun))
+
+    def plot_bound_values(self, nplot, show=True, name="", plot3d=False):
+        mfs_val, src_val, edges, plot_nodes = [], [], [t * nplot for t in range(1, self.poly.nedges)], []
+        for j in range(self.poly.nedges):
+            plot_nodes.append(self.poly.sample_edge(nplot, j, distribution="uniform"))
+            mfs_val.append(self.boundary_operator(plot_nodes[-1], j*np.ones(nplot, dtype=int)))
+            src_val.append(self.boundary_operator(plot_nodes[-1], j*np.ones(nplot, dtype=int), use_src=True))
+
+        mfs_val, src_val = np.concatenate(mfs_val), np.concatenate(src_val)
+        error_real = np.sqrt(np.mean(np.abs(np.real(mfs_val) - np.real(src_val)) ** 2))
+        error_imag = np.sqrt(np.mean(np.abs(np.imag(mfs_val) - np.imag(src_val)) ** 2))
+
+        if plot3d:
+            plot_nodes = np.concatenate(plot_nodes, axis=0)
+            fig = plt.figure(figsize=(20, 10))
+            ax1 = fig.add_subplot(221, projection='3d')
+            ax1.set_title("Real part, nsrc={}, nb={}, error={:3f}".format(self.nsrc, self.nbound, error_real))
+            # plot the boundary values above the polygon
+            ax1.plot(plot_nodes[:, 0], plot_nodes[:, 1], np.real(mfs_val), label="MFS")
+            ax1.plot(plot_nodes[:, 0], plot_nodes[:, 1], np.real(src_val), '--', label="Source contribution")
+
+            ax2 = fig.add_subplot(222, projection='3d')
+            ax2.set_title("Imaginary part, error={:3f}".format(error_imag))
+            ax2.plot(plot_nodes[:, 0], plot_nodes[:, 1], np.imag(mfs_val), label="MFS")
+            ax2.plot(plot_nodes[:, 0], plot_nodes[:, 1], np.imag(src_val), '--', label="Source contribution")
+
+            for ax in [ax1, ax2]:  # plot the polygon on the z=0 plane
+                ax.plot(self.poly.vertices[:, 0], self.poly.vertices[:, 1], np.zeros(self.poly.nedges), 'k')
+                ax.plot([self.poly.vertices[0, 0], self.poly.vertices[-1, 0]],
+                        [self.poly.vertices[0, 1], self.poly.vertices[-1, 1]], [0, 0.], 'k')
+            # set equal aspect ratio for the 3d plot
+            max_val = np.max(np.abs(plot_nodes), axis=0)
+            min_val = np.min(np.abs(plot_nodes), axis=0)
+            ax1.set_xlim([min_val[0], max_val[0]]), ax1.set_ylim([min_val[1], max_val[1]])
+            ax2.set_xlim([min_val[0], max_val[0]]), ax2.set_ylim([min_val[1], max_val[1]])
+            plt.legend()
+
+        else:
+            fig, ax = plt.subplots(2, 2, figsize=(20, 6))
+            ax[0, 0].set_ylim([np.min(src_val.real), np.max(src_val.real)])
+            ax[0, 1].set_ylim([np.min(src_val.imag), np.max(src_val.imag)])
+
+            ax[0, 0].set_title("Real part, nsrc={}, mean error={:3f}".format(self.nsrc, error_real))
+            ax[0, 1].set_title("Imaginary part, mean error={:3f}".format(error_imag))
+            ax[0, 0].plot(np.real(mfs_val), label="MFS")
+            ax[0, 0].plot(np.real(src_val), '--', label="Source contribution")
+            ax[0, 1].plot(np.imag(mfs_val), label="MFS")
+            ax[0, 1].plot(np.imag(src_val), '--', label="Source contribution")
+
+            # add horizontal line at 0
+            ax[0, 0].plot([0, len(mfs_val)], [0, 0], 'k')
+            ax[0, 1].plot([0, len(mfs_val)], [0, 0], 'k')
+            # add vertical bars at each edge change
+            ax[0, 0].vlines(edges, np.min(src_val.real), np.max(src_val.real), colors="k", linestyles="dashed")
+            ax[0, 1].vlines(edges, np.min(src_val.imag), np.max(src_val.imag), colors="k", linestyles="dashed")
+            plt.legend()
+            plt.tight_layout()
+
+        # add a subplot under both plots to show the coefficients
+        ax3 = fig.add_subplot(212)
+        ax3.set_title("Coefficients")
+        ax3.semilogy(np.abs(self.ampl.real), '.', label="real part")
+        ax3.semilogy(np.abs(self.ampl.imag), '.', label="imaginary part")
+        # plot a vline at each edge change (given by value changes in coeffs_id)
+        ax3.vlines(np.where(np.diff(self.boundv_ids) != 0)[0], np.minimum(np.min(self.ampl.real), np.min(self.ampl.imag)),
+                   np.maximum(np.max(self.ampl.real), np.max(self.ampl.imag)), colors="k", linestyles="dashed")
+        plt.legend()
+        if show:
+            plt.show()
+        else:  # save the figure
+            plt.savefig("data/fig/Neumann_edge_{}_nsrc={}.png".format(name, self.nsrc))

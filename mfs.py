@@ -5,7 +5,6 @@ from scipy.sparse.linalg import gmres
 from utils import Polygon
 from scipy.optimize import minimize
 from scipy.integrate import simpson
-from scipy.sparse.linalg import cg
 import time
 import matplotlib.pyplot as plt
 
@@ -22,15 +21,19 @@ def fundamental_solution_derivative(dist, k):
 
 
 def particular_solution(dist, theta, k, mu):
+    mu = np.reshape(mu, (1, -1))
     return jv(mu, k*dist) * np.cos(mu*theta)
 
 
-def particular_solution_gradient(dist, theta, k, mu):
-    """Compute the gradient of the particular solution at the points given the distances, angles (both shape
-    (points, nsrc)) and wavenumber, return a matrix of shape (npoints, nsources, 2)."""
-    dr = k*(jv(mu-1, k*dist) - jv(mu+1, k*dist))
-    dtheta = -mu*np.sin(mu*theta)
-    ctheta, stheta = np.cos(theta), np.sin(theta)
+def particular_solution_gradient(dist, theta, k, mu, polar_offset):
+    """Compute the gradient of the particular solution at the points given the distances, angles theta (both shape
+    (npoints, nsrc)) and wavenumber, return a matrix of shape (npoints, nsources, 2).
+    mu and polar_offset are of shape (nsources,)"""
+    mu, polar_offset = np.reshape(mu, (1, -1)), np.reshape(polar_offset, (1, -1))
+    dr = k*(jv(mu-1, k*dist) - jv(mu+1, k*dist)) * np.cos(mu*theta) / 2.
+    dtheta = - mu*np.sin(mu*theta)*jv(mu, k*dist)
+
+    ctheta, stheta = np.cos(theta + polar_offset), np.sin(theta + polar_offset)
     return np.stack([dr*ctheta - stheta*dtheta/dist, dr*stheta + ctheta*dtheta/dist], axis=-1)
 
 
@@ -351,12 +354,12 @@ class SlidingMFS:
 
             if self.add_fun > 0:
                 angles, diffs, norms = self.poly.compute_angles(self.bound)
-                print(np.min(norms))
                 factor = self.factor
 
                 indstart, indstop = self.nsrc, self.nsrc + self.poly.nedges
                 for t in range(self.add_fun):
-                    grad = particular_solution_gradient(norms, angles, self.k, t*factor)  # (np, nvertices, 2)
+                    # (np, nvertices, 2)
+                    grad = particular_solution_gradient(norms, angles, self.k, t*factor, self.poly.polar_angles)
                     A[:, indstart:indstop] = np.sum(grad * self.normvec[:, np.newaxis, :], axis=-1)
                     indstart, indstop = indstop, indstop + self.poly.nedges
 
@@ -444,11 +447,13 @@ class SlidingMFS:
                 angles, diffs, norms = self.poly.compute_angles(points)
 
                 indstart, indstop = self.nsrc, self.nsrc + self.poly.nedges
-                for t in range(self.add_fun):
-                    grad = particular_solution_gradient(norms, angles, self.k, t*self.factor)  # (np, nvertices, 2)
-                    res += np.sum(np.sum(grad * normals[:, np.newaxis, :], axis=-1) *
-                                  self.ampl[indstart:indstop].reshape(1, -1), axis=1)
-                    indstart, indstop = indstop, indstop + self.poly.nedges
+                if not use_src:
+                    for t in range(self.add_fun):
+                        grad = particular_solution_gradient(norms, angles, self.k, t*self.factor,
+                                                            self.poly.polar_angles)  # (np, nvertices, 2)
+                        res += np.sum(np.sum(grad * normals[:, np.newaxis, :], axis=-1) *
+                                      self.ampl[indstart:indstop].reshape(1, -1), axis=1)
+                        indstart, indstop = indstop, indstop + self.poly.nedges
             return res
         elif self.cond == 'dirichlet':
             return dirichlet_operator(points, None, alpha, pos, self.k)

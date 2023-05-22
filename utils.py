@@ -187,6 +187,8 @@ class Polygon:
         sin_sign = -np.sign(np.cross(-np.roll(edges, 1, axis=0), edges))
         self.angles = np.arccos(dotprod)
         self.angles = np.where(sin_sign < 0, 2*np.pi - self.angles, self.angles)
+        # compute polar angles of each edge
+        self.polar_angles = np.arctan2(edges[:, 1], edges[:, 0])
 
     def enlarge(self, factor):
         """Enlarge the polygon by a factor, by moving the vertices along their normals."""

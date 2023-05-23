@@ -37,7 +37,7 @@ def particular_solution_gradient(dist, theta, k, mu, polar_offset):
     return np.stack([dr*ctheta - stheta*dtheta/dist, dr*stheta + ctheta*dtheta/dist], axis=-1)
 
 
-def compute_sol(alpha, points, sourcesv, k, source=None, decouple=False):
+def compute_sol(alpha, points, sourcesv, k, source=None, decouple=False, individual_contr=False):
     """Compute the solution at the points given the virtual sources and the associated coefficients.
     If decouple is True, alpha is supposed tobe of shape 2n, the first n coefficients correspond to the real part of the
     fundamental solutions, the last n to the imaginary part."""
@@ -45,12 +45,13 @@ def compute_sol(alpha, points, sourcesv, k, source=None, decouple=False):
     fund_sol = fundamental_solution(points, sourcesv, k)
 
     if decouple and ncoeff > 1:
-        res = (np.sum(np.reshape(alpha[:ncoeff//2], -1)[np.newaxis, :] * np.real(fund_sol), axis=1) +
-               np.sum(np.reshape(alpha[ncoeff//2:], -1)[np.newaxis, :] * np.imag(fund_sol), axis=1))
+        res = (np.reshape(alpha[:ncoeff//2], -1)[np.newaxis, :] * np.real(fund_sol) +
+               np.reshape(alpha[ncoeff//2:], -1)[np.newaxis, :] * np.imag(fund_sol))
 
     else:
-        res = np.sum(np.reshape(alpha, -1)[np.newaxis, :] * fund_sol, axis=1)
-
+        res = np.reshape(alpha, -1)[np.newaxis, :] * fund_sol
+    if not individual_contr:
+        res = np.sum(res, axis=1)
     if source is not None:
         return res + np.reshape(fundamental_solution(points, source, k), -1)
     else:
@@ -175,10 +176,10 @@ def neumann_operator(points, normvec, alpha, sourcesv, k, decouple=False, return
     fund_der = fundamental_solution_derivative(norms, k)
 
     if decouple and ncoeff > 1:
+        vcontr = np.sum(normvec[:, np.newaxis, :] * diffs, axis=-1) / norms * (
+                np.real(fund_der) * alpha[:ncoeff // 2].reshape(1, -1) +
+                np.imag(fund_der) * alpha[ncoeff // 2:].reshape(1, -1))
         if not individual_contr:
-            vcontr = np.sum(normvec[:, np.newaxis, :] * diffs, axis=-1) / norms * (
-                            np.real(fund_der) * alpha[:ncoeff // 2].reshape(1, -1) +
-                            np.imag(fund_der) * alpha[ncoeff // 2:].reshape(1, -1))
             vcontr = np.sum(vcontr, axis=1)
 
     else:
@@ -194,7 +195,7 @@ def neumann_operator(points, normvec, alpha, sourcesv, k, decouple=False, return
         return vcontr
 
 
-def robin_operator(points, normvec, alpha, sourcesv, k, beta):
+def robin_operator(points, normvec, alpha, sourcesv, k, beta, individual_contr=False):
     if isinstance(beta, (int, float, complex, np.int64, np.float64, np.complex128)):
         beta = np.ones(len(points), dtype=np.complex128)*beta
     else:
@@ -202,18 +203,22 @@ def robin_operator(points, normvec, alpha, sourcesv, k, beta):
 
     diffs = points[:, np.newaxis, :] - sourcesv[np.newaxis, :, :]  # (np, npv, 2)
     norms = np.linalg.norm(diffs, axis=-1)  # (np, npv)
-    vcontr = np.sum((np.sum(normvec[:, np.newaxis, :] * diffs, axis=-1) / norms * # (np, 2)*(np, npv, 2) -> (npv,)
-                     fundamental_solution_derivative(norms, k) + fundamental_solution(points, sourcesv, k) *
-                     beta.reshape((-1, 1)) * 1j * k) * alpha.reshape(1, -1), axis=1)
+    vcontr = ((np.sum(normvec[:, np.newaxis, :] * diffs, axis=-1) / norms * # (np, 2)*(np, npv, 2) -> (npv,)
+               fundamental_solution_derivative(norms, k) + fundamental_solution(points, sourcesv, k) *
+               beta.reshape((-1, 1)) * 1j * k) * alpha.reshape(1, -1))
+
+    if not individual_contr:
+        vcontr = np.sum(vcontr, axis=1)
+
     return vcontr
 
 
-def dirichlet_operator(points, _, alpha, sourcesv, k):
+def dirichlet_operator(points, _, alpha, sourcesv, k, individual_contr=False):
     """ Computes the solution given by the virtual sources sourcesv with coefficients alpha at
     the points 'points' with normal vector normvec. Return the contribution from the virtual sources.
     """
 
-    return compute_sol(alpha, points, sourcesv, k)
+    return compute_sol(alpha, points, sourcesv, k, individual_contr=individual_contr)
 
 
 class SlidingMFS:
@@ -339,49 +344,10 @@ class SlidingMFS:
         # assemble the system matrix and rhs
         A = np.zeros((self.nbound, self.nsrc + self.add_fun*self.poly.nedges), dtype=complex)
         b = np.zeros((self.nbound, 1), dtype=complex)
+        self.ampl = np.ones(self.nsrc + self.add_fun*self.poly.nedges, dtype=complex)
+        A[:, :] = self.boundary_operator(self.bound, self.bound_ids, use_src=False, individual_contr=True)
 
-        if self.cond == "neumann":
-            diffs = self.bound[:, np.newaxis, :] - self.boundv[np.newaxis, :, :]
-            norms = np.linalg.norm(diffs, axis=-1)
-
-            # (np, 2)*(np, npv, 2)->(np, npv)
-            scalar_prod = np.sum(self.normvec[:, np.newaxis, :] * diffs, axis=-1) / norms
-            A[:, :self.nsrc] = scalar_prod * fundamental_solution_derivative(norms, self.k)
-            diffs = self.bound[:, np.newaxis, :] - self.pos_src[np.newaxis, :, :]  # rhs computation
-            norms = np.linalg.norm(diffs, axis=-1)
-            b[:] = - (np.sum(self.normvec[:, np.newaxis, :] * diffs, axis=-1) *
-                      fundamental_solution_derivative(norms, self.k) / norms)
-
-            if self.add_fun > 0:
-                angles, diffs, norms = self.poly.compute_angles(self.bound)
-                factor = self.factor
-
-                indstart, indstop = self.nsrc, self.nsrc + self.poly.nedges
-                for t in range(self.add_fun):
-                    # (np, nvertices, 2)
-                    grad = particular_solution_gradient(norms, angles, self.k, t*factor, self.poly.polar_angles)
-                    A[:, indstart:indstop] = np.sum(grad * self.normvec[:, np.newaxis, :], axis=-1)
-                    indstart, indstop = indstop, indstop + self.poly.nedges
-
-        elif self.cond == "dirichlet":
-            A[:, :self.nsrc] = fundamental_solution(self.bound[:], self.boundv, self.k)
-            b[:] = - fundamental_solution(self.bound, self.pos_src, self.k)
-
-        elif self.cond == "robin":
-            diffs = self.bound[:, np.newaxis, :] - self.boundv[np.newaxis, :, :]
-            norms = np.linalg.norm(diffs, axis=-1)
-
-            # (np, 2)*(np, np, 2)-> (np, np)
-            A[:, :self.nsrc] = (np.sum(self.normvec[:, np.newaxis, :] * diffs, axis=-1) /
-                                norms * fundamental_solution_derivative(norms, self.k) +
-                                fundamental_solution(self.bound, self.boundv, self.k) *
-                                self.beta[:, np.newaxis] * 1j * self.k)
-
-            diffs = self.bound[:, np.newaxis, :] - self.pos_src[np.newaxis, :, :]
-            norms = np.linalg.norm(diffs, axis=-1)
-            b[:] = -(np.sum(self.normvec[:, np.newaxis, :] * diffs, axis=-1) *
-                     fundamental_solution_derivative(norms, self.k) / norms +
-                     fundamental_solution(self.bound, self.pos_src, self.k) * self.beta[:, np.newaxis] * 1j * self.k)
+        b[:] = - np.reshape(self.boundary_operator(self.bound, self.bound_ids, use_src=True), [-1, 1])
 
         if solver == "direct":
             res = np.linalg.solve(A, b)
@@ -423,9 +389,6 @@ class SlidingMFS:
         factor = self.factor
         indstart, indstop = self.nsrc, self.nsrc + self.poly.nedges
         for t in range(self.add_fun):
-            # if t == 4:
-            #     res = particular_solution(norms[:, 1], angles[:, 1], self.k, t * factor[0, 1])
-            #     break
             res += np.sum(particular_solution(norms, angles, self.k, t*factor) *
                           self.ampl[indstart:indstop].reshape(1, -1), axis=1)
 
@@ -433,7 +396,7 @@ class SlidingMFS:
 
         return res
 
-    def boundary_operator(self, points, bound_ids, use_src=False):
+    def boundary_operator(self, points, bound_ids, use_src=False, individual_contr=False):
         normals = self.poly.normals[bound_ids]
         if use_src:
             pos = self.pos_src.reshape([1, -1])
@@ -442,7 +405,8 @@ class SlidingMFS:
             alpha = self.ampl
             pos = self.boundv
         if self.cond == 'neumann':
-            res = neumann_operator(points, normals, alpha[:self.nsrc], pos, self.k)
+            res = neumann_operator(points, normals, alpha[:self.nsrc], pos, self.k, individual_contr=individual_contr)
+
             if self.add_fun > 0:
                 angles, diffs, norms = self.poly.compute_angles(points)
 
@@ -451,14 +415,19 @@ class SlidingMFS:
                     for t in range(self.add_fun):
                         grad = particular_solution_gradient(norms, angles, self.k, t*self.factor,
                                                             self.poly.polar_angles)  # (np, nvertices, 2)
-                        res += np.sum(np.sum(grad * normals[:, np.newaxis, :], axis=-1) *
-                                      self.ampl[indstart:indstop].reshape(1, -1), axis=1)
+
+                        add_contr = (np.sum(grad * normals[:, np.newaxis, :], axis=-1) *
+                                     self.ampl[indstart:indstop].reshape(1, -1))
+                        if not individual_contr:
+                            res += np.sum(add_contr, axis=1)
+                        else:
+                            res = np.concatenate([res, add_contr], axis=1)
                         indstart, indstop = indstop, indstop + self.poly.nedges
             return res
         elif self.cond == 'dirichlet':
-            return dirichlet_operator(points, None, alpha, pos, self.k)
+            return dirichlet_operator(points, None, alpha, pos, self.k, individual_contr=individual_contr)
         elif self.cond == 'robin':
-            return robin_operator(points, normals, alpha, pos, self.k, self.beta)
+            return robin_operator(points, normals, alpha, pos, self.k, self.beta, individual_contr=individual_contr)
         else:
             raise ValueError("Unknown boundary condition")
 
@@ -495,7 +464,7 @@ class SlidingMFS:
         for j in range(self.poly.nedges):
             plot_nodes.append(self.poly.sample_edge(nplot, j, distribution="uniform"))
             mfs_val.append(self.boundary_operator(plot_nodes[-1], j*np.ones(nplot, dtype=int)))
-            src_val.append(self.boundary_operator(plot_nodes[-1], j*np.ones(nplot, dtype=int), use_src=True))
+            src_val.append(-self.boundary_operator(plot_nodes[-1], j*np.ones(nplot, dtype=int), use_src=True))
 
         mfs_val, src_val = np.concatenate(mfs_val), np.concatenate(src_val)
         error_real = np.sqrt(np.mean(np.abs(np.real(mfs_val) - np.real(src_val)) ** 2))

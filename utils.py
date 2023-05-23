@@ -178,17 +178,17 @@ class Polygon:
         self.normals = np.stack([edges[:, 1], -edges[:, 0]], axis=1)
         self.normals /= np.linalg.norm(self.normals, axis=1)[:, np.newaxis]
         self.nedges = len(vertices)
-        self.lengths = np.linalg.norm(np.roll(vertices, -1, axis=0) - vertices, axis=1)  # length of each edge
+        self.lengths = np.linalg.norm(edges, axis=1)  # length of each edge
 
         edges /= self.lengths[:, np.newaxis]
         self.edges = edges
         # compute inner angles
         dotprod = np.sum(-np.roll(edges, 1, axis=0) * edges, axis=1)
         sin_sign = -np.sign(np.cross(-np.roll(edges, 1, axis=0), edges))
-        self.angles = np.arccos(dotprod)
-        self.angles = np.where(sin_sign < 0, 2*np.pi - self.angles, self.angles)
-        # compute polar angles of each edge
-        self.polar_angles = np.arctan2(edges[:, 1], edges[:, 0])
+        self.angles = np.arccos(np.clip(dotprod, -1, 1))
+        self.angles = mod2pi(np.where(sin_sign < 0, 2*np.pi - self.angles, self.angles))
+        # compute polar angles of each edge with respect to the x-axis, in [0, 2pi]
+        self.polar_angles = mod2pi(np.arctan2(edges[:, 1], edges[:, 0]))
 
     def enlarge(self, factor):
         """Enlarge the polygon by a factor, by moving the vertices along their normals."""
@@ -337,12 +337,11 @@ class Polygon:
         """Compute polar angles of points with respect to the vertices of the polygon, using the next edge (in
         trigonometric order) as polar axis. Return angles and vectors from vertices to points."""
         diffs = points[:, np.newaxis] - self.vertices[np.newaxis, :]  # shape (npoints, nvertices, 2)
-        # angles = np.arctan2(diffs[:, :, 1], diffs[:, :, 0]) - self.edge_slope[np.newaxis, :]
-        dotprod = np.sum(diffs * self.edges[np.newaxis, :, :], axis=-1)  # shape (npoints, nvertices)
         norms = np.linalg.norm(diffs, axis=2)
-        sin_sign = -np.sign(np.cross(diffs / norms[:, :, np.newaxis], self.edges[np.newaxis, :, :], axis=-1))
-        angles = np.arccos(np.clip(dotprod / norms, -1, 1))
-        angles = np.where(sin_sign < 0, 2 * np.pi - angles, angles)
+
+        # shape (npoints, nvertices)
+        angles = mod2pi(mod2pi(np.arctan2(diffs[:, :, 1], diffs[:, :, 0])) - self.polar_angles[np.newaxis, :])
+
         return angles, diffs, norms
 
 
@@ -360,3 +359,8 @@ class Ellipse:
         normvec = np.stack([self.radiusy * np.cos(theta), self.radiusx * np.sin(theta)], axis=1)
         return (np.stack([self.radiusx*np.cos(theta), self.radiusy*np.sin(theta)], axis=1) + self.center[np.newaxis, :],
                 normvec / np.linalg.norm(normvec, axis=1)[:, np.newaxis])
+
+
+def mod2pi(angle):
+    """Return angle modulo 2*pi"""
+    return (angle + 2.) % (2 * np.pi) - 2.

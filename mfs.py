@@ -36,27 +36,6 @@ def particular_solution_gradient(dist, theta, k, mu, polar_offset):
     return np.stack([dr*ctheta - stheta*dtheta/dist, dr*stheta + ctheta*dtheta/dist], axis=-1)
 
 
-def compute_sol(alpha, points, sourcesv, k, source=None, decouple=False, individual_contr=False):
-    """Compute the solution at the points given the virtual sources and the associated coefficients.
-    If decouple is True, alpha is supposed tobe of shape 2n, the first n coefficients correspond to the real part of the
-    fundamental solutions, the last n to the imaginary part."""
-    ncoeff = len(alpha)
-    fund_sol = fundamental_solution(points, sourcesv, k)
-
-    if decouple and ncoeff > 1:
-        res = (np.reshape(alpha[:ncoeff//2], -1)[np.newaxis, :] * np.real(fund_sol) +
-               np.reshape(alpha[ncoeff//2:], -1)[np.newaxis, :] * np.imag(fund_sol))
-
-    else:
-        res = np.reshape(alpha, -1)[np.newaxis, :] * fund_sol
-    if not individual_contr:
-        res = np.sum(res, axis=1)
-    if source is not None:
-        return res + np.reshape(fundamental_solution(points, source, k), -1)
-    else:
-        return res
-
-
 def neumann_operator(points, normvec, alpha, sourcesv, k, return_diffs=False,
                      individual_contr=False):
     """ Computes the normal derivative of the solution given by the virtual sources sourcesv with coefficients alpha at
@@ -101,8 +80,10 @@ def dirichlet_operator(points, _, alpha, sourcesv, k, individual_contr=False):
     """ Computes the solution given by the virtual sources sourcesv with coefficients alpha at
     the points 'points' with normal vector normvec. Return the contribution from the virtual sources.
     """
-
-    return compute_sol(alpha, points, sourcesv, k, individual_contr=individual_contr)
+    res = fundamental_solution(points, sourcesv, k) * alpha.reshape(1, -1)
+    if not individual_contr:
+        res = np.sum(res, axis=1)
+    return res
 
 
 class HelmholtzMFS:
@@ -274,32 +255,34 @@ class HelmholtzMFS:
         else:
             alpha = self.ampl
             pos = self.boundv
+
         if self.cond == 'neumann':
             res = neumann_operator(points, normals, alpha[:self.nsrc], pos, self.k, individual_contr=individual_contr)
-
-            if self.add_fun > 0:
-                angles, diffs, norms = self.poly.compute_angles(points)
-
-                indstart, indstop = self.nsrc, self.nsrc + self.poly.nedges
-                if not use_src:
-                    for t in range(self.add_fun):
-                        grad = particular_solution_gradient(norms, angles, self.k, t*self.factor,
-                                                            self.poly.polar_angles)  # (np, nvertices, 2)
-
-                        add_contr = (np.sum(grad * normals[:, np.newaxis, :], axis=-1) *
-                                     self.ampl[indstart:indstop].reshape(1, -1))
-                        if not individual_contr:
-                            res += np.sum(add_contr, axis=1)
-                        else:
-                            res = np.concatenate([res, add_contr], axis=1)
-                        indstart, indstop = indstop, indstop + self.poly.nedges
-            return res
         elif self.cond == 'dirichlet':
-            return dirichlet_operator(points, None, alpha, pos, self.k, individual_contr=individual_contr)
+            res = dirichlet_operator(points, None, alpha[:self.nsrc], pos, self.k, individual_contr=individual_contr)
         elif self.cond == 'robin':
-            return robin_operator(points, normals, alpha, pos, self.k, self.beta, individual_contr=individual_contr)
+            res = robin_operator(points, normals, alpha[:self.nsrc], pos, self.k, self.beta,
+                                 individual_contr=individual_contr)
         else:
             raise ValueError("Unknown boundary condition")
+
+        if self.add_fun > 0:
+            angles, diffs, norms = self.poly.compute_angles(points)
+
+            indstart, indstop = self.nsrc, self.nsrc + self.poly.nedges
+            if not use_src:
+                for t in range(self.add_fun):
+                    grad = particular_solution_gradient(norms, angles, self.k, t * self.factor,
+                                                        self.poly.polar_angles)  # (np, nvertices, 2)
+
+                    add_contr = (np.sum(grad * normals[:, np.newaxis, :], axis=-1) *
+                                 self.ampl[indstart:indstop].reshape(1, -1))
+                    if not individual_contr:
+                        res += np.sum(add_contr, axis=1)
+                    else:
+                        res = np.concatenate([res, add_contr], axis=1)
+                    indstart, indstop = indstop, indstop + self.poly.nedges
+        return res
 
     def plot_bound_values(self, nplot, show=True, name="", plot3d=False):
         mfs_val, src_val, edges, plot_nodes = [], [], [t * nplot for t in range(1, self.poly.nedges)], []

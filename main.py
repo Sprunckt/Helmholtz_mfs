@@ -1,40 +1,40 @@
-from utils import plot_complex, translate_boundary, Polygon, c, plot_boundary
+from utils import plot_complex, Polygon, c, plot_boundary
 import numpy as np
-from mfs import compute_sol, solve
+from mfs import HelmholtzMFS
 
 
 boundary_cond = "neumann"
 
 # boundary points
-npoints = 200
 lx, ly = 5., 3.
 f = 100
+k = 2 * np.pi * f / c
 
 vertices = np.array([[0, 0], [lx, 0.], [lx, ly], [0, ly]])
 
 poly = Polygon(vertices)
-bound, norm_vec = poly.sample(npoints, "uniform")
-dx = 0.1
-boundv = translate_boundary(bound, norm_vec, dx)
+dx = 0.2
+nbound, nboundv = 200, 100
 
-beta = np.ones(len(bound), dtype=complex)*(6-6j)
+beta = 6-6j
 pos_src = np.array([[2.5, 2.5]])
 
-# plot boundary
-plot = False
-if plot:
-    plot_boundary(bound, norm_vec, boundv, pos_src)
 
 npo = 100
 xx, yy = np.meshgrid(np.linspace(0, lx, npo), np.linspace(0., ly, npo))
 points = np.stack([xx.ravel(), yy.ravel()], axis=1)
 
-k = 2*np.pi*f/c
-alpha = solve(beta, norm_vec, bound, boundv, pos_src, k, source_type='dirac', cond=boundary_cond)
+smfs = HelmholtzMFS(nbound=nbound, nsrc=100, pos_src=pos_src, k=k, poly=poly,
+                    dx=dx, cond=boundary_cond, beta=beta, src_nb="total", add_fun=0)
+
+# plot boundary and source
+plot_boundary(smfs.bound, smfs.normvec, smfs.boundv, pos_src)
+
+# solve the system
+smfs.mfs_fit(solver='lstsq')
 
 # plot the solution
-sol = compute_sol(alpha, points, boundv, k, pos_src)
-out_points = poly.is_out(points, poly)
+sol = smfs.evaluate_sol(points)
 
-sol[out_points] = np.nan + 1j*np.nan
-plot_complex(xx, yy, sol, extent=[0, lx, 0, ly], vmin=-2, vmax=2)
+plot_complex(xx, yy, sol, extent=[0, lx, 0, ly])
+smfs.plot_bound_values(1000)

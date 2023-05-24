@@ -41,7 +41,6 @@ def neumann_operator(points, normvec, alpha, sourcesv, k, return_diffs=False,
     """ Computes the normal derivative of the solution given by the virtual sources sourcesv with coefficients alpha at
     the points 'points' with normal vector normvec. Return the contribution from the virtual sources.
     """
-    ncoeff = len(alpha)
     diffs = points[:, np.newaxis, :] - sourcesv[np.newaxis, :, :]  # (np, npv, 2)
     norms = np.linalg.norm(diffs, axis=-1)  # (np, npv)
     fund_der = fundamental_solution_derivative(norms, k)
@@ -62,11 +61,12 @@ def robin_operator(points, normvec, alpha, sourcesv, k, beta, individual_contr=F
     if isinstance(beta, (int, float, complex, np.int64, np.float64, np.complex128)):
         beta = np.ones(len(points), dtype=np.complex128)*beta
     else:
-        beta = np.ones(len(points), dtype=np.complex128)*beta[0]
+        if len(beta) != len(points):
+            beta = np.ones(len(points), dtype=np.complex128)*beta[0]
 
     diffs = points[:, np.newaxis, :] - sourcesv[np.newaxis, :, :]  # (np, npv, 2)
     norms = np.linalg.norm(diffs, axis=-1)  # (np, npv)
-    vcontr = ((np.sum(normvec[:, np.newaxis, :] * diffs, axis=-1) / norms * # (np, 2)*(np, npv, 2) -> (npv,)
+    vcontr = ((np.sum(normvec[:, np.newaxis, :] * diffs, axis=-1) / norms *  # (np, 2)*(np, npv, 2) -> (npv,)
                fundamental_solution_derivative(norms, k) + fundamental_solution(points, sourcesv, k) *
                beta.reshape((-1, 1)) * 1j * k) * alpha.reshape(1, -1))
 
@@ -247,8 +247,12 @@ class HelmholtzMFS:
 
         return res
 
-    def boundary_operator(self, points, bound_ids, use_src=False, individual_contr=False):
+    def boundary_operator(self, points, bound_ids, use_src=False, individual_contr=False, beta=None):
         normals = self.poly.normals[bound_ids]
+
+        if beta is None:
+            beta = np.ones(len(points)) * self.beta[0]
+
         if use_src:
             pos = self.pos_src.reshape([1, -1])
             alpha = np.ones(1)
@@ -261,8 +265,9 @@ class HelmholtzMFS:
         elif self.cond == 'dirichlet':
             res = dirichlet_operator(points, None, alpha[:self.nsrc], pos, self.k, individual_contr=individual_contr)
         elif self.cond == 'robin':
-            res = robin_operator(points, normals, alpha[:self.nsrc], pos, self.k, self.beta,
+            res = robin_operator(points, normals, alpha[:self.nsrc], pos, self.k, beta,
                                  individual_contr=individual_contr)
+
         else:
             raise ValueError("Unknown boundary condition")
 
@@ -274,9 +279,19 @@ class HelmholtzMFS:
                 for t in range(self.add_fun):
                     grad = particular_solution_gradient(norms, angles, self.k, t * self.factor,
                                                         self.poly.polar_angles)  # (np, nvertices, 2)
+                    if self.cond == 'neumann':
+                        add_contr = (np.sum(grad * normals[:, np.newaxis, :], axis=-1) *
+                                     self.ampl[indstart:indstop].reshape(1, -1))
+                    elif self.cond == 'robin':
+                        add_contr = ((np.sum(grad * normals[:, np.newaxis, :], axis=-1) + beta.reshape(-1, 1) *
+                                      self.k*1j*particular_solution(norms, angles, self.k, t*self.factor)) *
+                                     self.ampl[indstart:indstop].reshape(1, -1))
+                    elif self.cond == 'dirichlet':
+                        add_contr = (particular_solution(norms, angles, self.k, t*self.factor) *
+                                     self.ampl[indstart:indstop].reshape(1, -1))
+                    else:
+                        raise ValueError("Unknown boundary condition")
 
-                    add_contr = (np.sum(grad * normals[:, np.newaxis, :], axis=-1) *
-                                 self.ampl[indstart:indstop].reshape(1, -1))
                     if not individual_contr:
                         res += np.sum(add_contr, axis=1)
                     else:

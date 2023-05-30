@@ -97,7 +97,7 @@ class HelmholtzMFS:
         self.cond = cond
         self.nbound = nbound
         if sample_kwargs is None:
-            sample_kwargs = {"distribution": 'uniform', "min_dist": 0.05}
+            sample_kwargs = {"distribution": 'uniform', "min_dist": 0.01}
         self.bound, self.normvec, self.bound_ids, self.params = poly.sample(nbound, **sample_kwargs,
                                                                             return_ids=True, return_nodes=True)
 

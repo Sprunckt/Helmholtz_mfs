@@ -22,12 +22,6 @@ beta = 0.006378610727567917+0.009574047932848483j
 
 exact_path = "data/"
 
-if bound_cond == "neumann":
-    op = neumann_operator
-elif bound_cond == "robin":
-    op = robin_operator
-else:
-    op = dirichlet_operator
 
 if test_type in ["comsol_polygon", "distance_polygon", "sliding_polygon", "eigen_frequencies", "mean_border_error"]:
     vertices = np.array([[2.2, 0], [4.3, 0.], [5.7, 1.9], [3.3, 5.1], [1.7, 5.5], [-0.75, 2.75]])
@@ -130,7 +124,7 @@ elif test_type == "comsol_polygon":
         k = 2 * np.pi * f / c
 
         for indp, npo in enumerate(npoints):
-            smfs = HelmholtzMFS(nbound=npo, nsrc=npo, pos_src=pos_src, k=k, poly=poly,
+            smfs = HelmholtzMFS(nbound=np.maximum(1000, npo), nsrc=npo, pos_src=pos_src, k=k, poly=poly,
                                 dx=dx, cond=bound_cond, beta=beta, src_nb="total", add_fun=5)
 
             print("Solving for frequency {} Hz with {} sources".format(f, smfs.nsrc))

@@ -2,7 +2,7 @@ import numpy as np
 from scipy.special import hankel1, jv
 from sklearn.linear_model import Ridge
 from scipy.sparse.linalg import gmres
-from utils import Polygon
+from utils import Polygon, ExtrudedPolygon
 from scipy.integrate import simpson
 import time
 import matplotlib.pyplot as plt
@@ -89,24 +89,34 @@ def dirichlet_operator(points, _, alpha, sourcesv, k, individual_contr=False):
 class HelmholtzMFS:
     def __init__(self, nbound: int, nsrc: int, pos_src: np.ndarray, poly: Polygon,
                  k: float, dx: float = None, cond='neumann', sample_kwargs=None, beta=None, src_nb='total',
-                 add_fun=0):
+                 add_fun=0, get_parametrization=False):
+        if isinstance(poly, Polygon):
+            self.d = 2
+        elif isinstance(poly, ExtrudedPolygon):
+            self.d = 3
+        else:
+            raise ValueError("poly must be a Polygon or ExtrudedPolygon instance")
+
         self.dx = dx
         self.pos_src = pos_src
         self.poly = poly
         self.k = k
         self.cond = cond
-        self.nbound = nbound
         if sample_kwargs is None:
             sample_kwargs = {"distribution": 'uniform', "min_dist": 0.01}
-        self.bound, self.normvec, self.bound_ids, self.params = poly.sample(nbound, **sample_kwargs, return_nodes=True)
+        res = poly.sample(nbound, **sample_kwargs, return_nodes=get_parametrization)
+        self.bound, self.normvec, self.bound_ids = res[:3]
+        self.nbound = len(self.bound)
 
+        if get_parametrization:
+            self.param = res[3]
         sample_kwargs["min_dist"], sample_kwargs["distribution"] = 0., "uniform"
         if src_nb == 'total':
-            boundv, self.normvecv, self.boundv_ids, self.paramsv = poly.sample(nsrc, **sample_kwargs, return_nodes=True)
+            boundv, self.normvecv, self.boundv_ids = poly.sample(nsrc, **sample_kwargs, return_nodes=False)
         elif src_nb == 'per_wavelength':  # sample nsrc points per wavelength
             src_sep = 2*np.pi/k/(nsrc - 1)
-            boundv, self.normvecv, self.boundv_ids, self.paramsv = poly.sample(src_sep, **sample_kwargs, 
-                                                                               sample_type="sep", return_nodes=True)
+            boundv, self.normvecv, self.boundv_ids = poly.sample(src_sep, **sample_kwargs,
+                                                                 sample_type="sep", return_nodes=False)
         else:
             raise ValueError("src_nb must be 'total' or 'per_wavelength'")
         self.boundv = boundv + dx*self.normvecv

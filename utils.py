@@ -290,6 +290,60 @@ class Ellipse:
                 normvec / np.linalg.norm(normvec, axis=1)[:, np.newaxis])
 
 
+class ExtrudedPolygon(Polygon):
+    def __init__(self, vertices, height):
+        super().__init__(vertices)
+        self.height = height
+        vertices = np.zeros((2 * self.nedges, 3))
+        vertices[:self.nedges, :2], vertices[self.nedges:, :2] = self.vertices.copy(), self.vertices.copy()
+        vertices[self.nedges:, 2] = self.height
+
+        normals = np.zeros((self.nedges + 2, 3))
+        normals[:self.nedges, :2] = self.normals.copy()
+        normals[self.nedges, 2], normals[self.nedges + 1, 2] = -1., 1.  # bottom and top normals
+
+        self.vertices, self.normals = vertices, normals
+
+    def sample(self, separation, distribution='uniform', min_dist=0.01, sample_type="separation",
+               return_nodes=False):  # return_nodes is for compatibility with Polygon
+        if distribution != 'uniform':
+            raise NotImplementedError("Only uniform distribution is implemented for extruded polygons.")
+
+        renormed_edges = self.edges / np.linalg.norm(self.edges, axis=1)[:, np.newaxis]
+
+        boundary, bound_ids, normals  = [], [], []
+        vertical_nodes = np.arange(min_dist, self.height - min_dist, separation)
+        for i in range(self.nedges):  # vertical faces
+            horizontal_nodes = np.arange(min_dist, self.lengths[i] - min_dist, separation)
+            thor, tvert = np.meshgrid(horizontal_nodes, vertical_nodes)
+
+            boundary.append(np.concatenate([self.vertices[i, :2] + thor.reshape(-1, 1)*renormed_edges[i][np.newaxis, :],
+                                            tvert.reshape(-1, 1)], axis=1))
+            bound_ids.append(np.full(thor.size, i))
+            normals.append(np.full([thor.size, 3], self.normals[i]))
+        # sample bottom and top : basic version for now, sample on a grid and remove points outside
+        # TODO : improve this
+        gridx, gridy = np.meshgrid(np.arange(np.min(self.vertices[:, 0]) + min_dist,
+                                             np.max(self.vertices[:, 0]), separation),
+                                   np.arange(np.min(self.vertices[:, 1]) + min_dist,
+                                             np.max(self.vertices[:, 1]), separation))
+
+        grid = np.stack([gridx.flatten(), gridy.flatten()], axis=1)
+        grid = grid[is_in(self.vertices[:self.nedges, :2], grid, min_dist)]
+        boundary.append(np.concatenate([grid, np.zeros((grid.shape[0], 1))], axis=1))  # bottom
+        boundary.append(np.concatenate([grid, np.full((grid.shape[0], 1), self.height)], axis=1))  # top
+        normals.append(np.full((grid.shape[0], 3), [0., 0., -1.]))
+        normals.append(np.full((grid.shape[0], 3), [0., 0., 1.]))
+        bound_ids.append(np.full(grid.shape[0], self.nedges))
+        bound_ids.append(np.full(grid.shape[0], self.nedges + 1))
+
+        res = (np.concatenate(boundary), np.concatenate(normals), np.concatenate(bound_ids))
+        if return_nodes:
+            res += (None,)
+
+        return res
+
+
 def mod2pi(angle):
     """Return angle modulo 2*pi"""
     return (angle + 2.) % (2 * np.pi) - 2.

@@ -98,18 +98,15 @@ class HelmholtzMFS:
         self.nbound = nbound
         if sample_kwargs is None:
             sample_kwargs = {"distribution": 'uniform', "min_dist": 0.01}
-        self.bound, self.normvec, self.bound_ids, self.params = poly.sample(nbound, **sample_kwargs,
-                                                                            return_ids=True, return_nodes=True)
+        self.bound, self.normvec, self.bound_ids, self.params = poly.sample(nbound, **sample_kwargs, return_nodes=True)
 
         sample_kwargs["min_dist"], sample_kwargs["distribution"] = 0., "uniform"
         if src_nb == 'total':
-            boundv, self.normvecv, self.boundv_ids, self.paramsv = poly.sample(nsrc, **sample_kwargs,
-                                                                               return_ids=True, return_nodes=True)
+            boundv, self.normvecv, self.boundv_ids, self.paramsv = poly.sample(nsrc, **sample_kwargs, return_nodes=True)
         elif src_nb == 'per_wavelength':  # sample nsrc points per wavelength
             src_sep = 2*np.pi/k/(nsrc - 1)
             boundv, self.normvecv, self.boundv_ids, self.paramsv = poly.sample(src_sep, **sample_kwargs, 
-                                                                               sample_type="sep",
-                                                                               return_ids=True, return_nodes=True)
+                                                                               sample_type="sep", return_nodes=True)
         else:
             raise ValueError("src_nb must be 'total' or 'per_wavelength'")
         self.boundv = boundv + dx*self.normvecv
@@ -236,14 +233,15 @@ class HelmholtzMFS:
         res = np.sum(fundamental_solution(points, self.boundv, self.k) * self.ampl[:self.nsrc].reshape(1, -1), axis=1)
         res += np.reshape(fundamental_solution(points, self.pos_src, self.k), -1)
 
-        angles, diffs, norms = self.poly.compute_angles(points)
-        factor = self.factor
-        indstart, indstop = self.nsrc, self.nsrc + self.poly.nedges
-        for t in range(self.add_fun):
-            res += np.sum(particular_solution(norms, angles, self.k, t*factor) *
-                          self.ampl[indstart:indstop].reshape(1, -1), axis=1)
+        if self.add_fun > 0:
+            angles, diffs, norms = self.poly.compute_angles(points)
+            factor = self.factor
+            indstart, indstop = self.nsrc, self.nsrc + self.poly.nedges
+            for t in range(self.add_fun):
+                res += np.sum(particular_solution(norms, angles, self.k, t*factor) *
+                              self.ampl[indstart:indstop].reshape(1, -1), axis=1)
 
-            indstart, indstop = indstop, indstop + self.poly.nedges
+                indstart, indstop = indstop, indstop + self.poly.nedges
 
         return res
 

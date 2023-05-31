@@ -281,8 +281,8 @@ elif test_type == "time":
         xx, yy = np.meshgrid(np.linspace(np.min(poly.vertices[:, 0])+0.01, np.max(poly.vertices[:, 0])-0.01, 100),
                              np.linspace(np.min(poly.vertices[:, 0])+0.01, np.max(poly.vertices[:, 1])-0.01, 100))
         concat = np.concatenate([xx.reshape(-1, 1), yy.reshape(-1, 1)], axis=1)
-        isout = poly.is_out(concat)
-        compute_pos = np.concatenate(concat[~isout, :])
+        isin = poly.is_in(concat)
+        compute_pos = np.concatenate(concat[~isin, :])
         solfreq = np.zeros([nfreq, len(compute_pos)], dtype=complex)
 
     else:

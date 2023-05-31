@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from shapely.geometry import Polygon as ShapelyPolygon
 from shapely.geometry import Point as ShapelyPoint
+import pygmsh
 c = 343
 
 
@@ -134,11 +135,16 @@ class Polygon:
         # compute polar angles of each edge with respect to the x-axis, in [0, 2pi]
         self.polar_angles = mod2pi(np.arctan2(edges[:, 1], edges[:, 0]))
 
-    def enlarge(self, factor):
-        """Enlarge the polygon by a factor, by moving the vertices along their normals."""
-        barycenter = np.mean(self.vertices, axis=0)
-        vertices_shifted = self.vertices - barycenter
-        self.vertices = vertices_shifted * factor + barycenter
+    def shift(self, factor):
+        """Shift the polygon by a factor, by moving the vertices along the bisecting line.
+        Return a new 2D Polygon object."""
+
+        barycenter = np.mean(self.vertices[:self.nedges, :2], axis=0)
+        vertices_shifted = self.vertices[:self.nedges, :2] - barycenter
+        vertices = (vertices_shifted * factor / np.linalg.norm(vertices_shifted, axis=-1)[:, np.newaxis] +
+                    self.vertices[:self.nedges, :2])
+
+        return Polygon(vertices)
 
     def sample_edge(self, n, edge_id, distribution='uniform', sample_type="total", min_dist=None, return_nodes=False):
         if distribution == "uniform":
@@ -273,7 +279,11 @@ class Polygon:
 
         return angles, diffs, norms
 
-
+    def sample_inside(self, sep):
+        with pygmsh.geo.Geometry() as geom:
+            geom.add_polygon(self.vertices[:self.nedges, :2], mesh_size=sep)
+            mesh = geom.generate_mesh()
+        return mesh.points[:, :2]
 class Ellipse:
     def __init__(self, radiusx, radiusy, center=None):
         self.radiusx = radiusx
@@ -305,13 +315,13 @@ class ExtrudedPolygon(Polygon):
         self.vertices, self.normals = vertices, normals
 
     def sample(self, separation, distribution='uniform', min_dist=0.01, sample_type="separation",
-               return_nodes=False):  # return_nodes is for compatibility with Polygon
+               return_nodes=False, return_face_shapes=False):  # return_nodes is for compatibility with Polygon
         if distribution != 'uniform':
             raise NotImplementedError("Only uniform distribution is implemented for extruded polygons.")
 
         renormed_edges = self.edges / np.linalg.norm(self.edges, axis=1)[:, np.newaxis]
 
-        boundary, bound_ids, normals  = [], [], []
+        boundary, bound_ids, normals, face_shapes  = [], [], [], []
         vertical_nodes = np.arange(min_dist, self.height - min_dist, separation)
         for i in range(self.nedges):  # vertical faces
             horizontal_nodes = np.arange(min_dist, self.lengths[i] - min_dist, separation)
@@ -321,32 +331,32 @@ class ExtrudedPolygon(Polygon):
                                             tvert.reshape(-1, 1)], axis=1))
             bound_ids.append(np.full(thor.size, i))
             normals.append(np.full([thor.size, 3], self.normals[i]))
-        # sample bottom and top : basic version for now, sample on a grid and remove points outside
-        # TODO : improve this
-        gridx, gridy = np.meshgrid(np.arange(np.min(self.vertices[:, 0]) + min_dist,
-                                             np.max(self.vertices[:, 0]), separation),
-                                   np.arange(np.min(self.vertices[:, 1]) + min_dist,
-                                             np.max(self.vertices[:, 1]), separation))
+            face_shapes.append(thor.shape)
+        # sample bottom and top : mesh the inside of a smaller polygon
+        inside_poly = self.shift(-min_dist)
+        points = inside_poly.sample_inside(separation)
+        boundary.append(np.concatenate([points, np.zeros([points.shape[0], 1])], axis=1) ) # bottom
+        boundary.append(boundary[-1].copy())  # top
+        boundary[-1][:, 2] = self.height
 
-        grid = np.stack([gridx.flatten(), gridy.flatten()], axis=1)
-        grid = grid[is_in(self.vertices[:self.nedges, :2], grid, min_dist)]
-        boundary.append(np.concatenate([grid, np.zeros((grid.shape[0], 1))], axis=1))  # bottom
-        boundary.append(np.concatenate([grid, np.full((grid.shape[0], 1), self.height)], axis=1))  # top
-        normals.append(np.full((grid.shape[0], 3), [0., 0., -1.]))
-        normals.append(np.full((grid.shape[0], 3), [0., 0., 1.]))
-        bound_ids.append(np.full(grid.shape[0], self.nedges))
-        bound_ids.append(np.full(grid.shape[0], self.nedges + 1))
+        normals.append(np.full((points.shape[0], 3), [0., 0., -1.]))
+        normals.append(np.full((points.shape[0], 3), [0., 0., 1.]))
+        bound_ids.append(np.full(points.shape[0], self.nedges))
+        bound_ids.append(np.full(points.shape[0], self.nedges + 1))
 
         res = (np.concatenate(boundary), np.concatenate(normals), np.concatenate(bound_ids))
         if return_nodes:
             res += (None,)
 
+        if return_face_shapes:
+            res += (face_shapes,)
         return res
 
 
 def mod2pi(angle):
     """Return angle modulo 2*pi"""
     return (angle + 2.) % (2 * np.pi) - 2.
+
 
 def is_in(vertices, points, min_dist=0.0):
     """Check if points (shape (npoints, d)) are inside and at a distance superior to min_dist of a (not necessarily

@@ -19,6 +19,18 @@ def fundamental_solution_derivative(dist, k):
     return -(1j/4) * k * hankel1(1, k*dist)
 
 
+def fundamental_solution3d(points, sources, k):
+    """Compute the fundamental solution at the points given the sources, return a matrix of shape npoints, nsources."""
+    norms = np.linalg.norm(points[:, np.newaxis, :] - sources[np.newaxis, :, :], axis=-1)
+    return np.exp(-1j*k * norms) / norms / (4*np.pi)
+
+
+def fundamental_solution_derivative3d(dist, k):
+    """Compute the derivative of the fundamental solution at the points given the distances,
+    return a matrix of shape npoints, nsources."""
+    return -np.exp(-1j*k * dist) / dist * (1j*k + 1 / dist) / (4*np.pi)
+
+
 def particular_solution(dist, theta, k, mu):
     mu = np.reshape(mu, (1, -1))
     return jv(mu, k*dist) * np.cos(mu*theta)
@@ -37,13 +49,13 @@ def particular_solution_gradient(dist, theta, k, mu, polar_offset):
 
 
 def neumann_operator(points, normvec, alpha, sourcesv, k, return_diffs=False,
-                     individual_contr=False):
+                     fund_der_wrap=fundamental_solution_derivative, individual_contr=False):
     """ Computes the normal derivative of the solution given by the virtual sources sourcesv with coefficients alpha at
     the points 'points' with normal vector normvec. Return the contribution from the virtual sources.
     """
     diffs = points[:, np.newaxis, :] - sourcesv[np.newaxis, :, :]  # (np, npv, 2)
     norms = np.linalg.norm(diffs, axis=-1)  # (np, npv)
-    fund_der = fundamental_solution_derivative(norms, k)
+    fund_der = fund_der_wrap(norms, k)
 
     vcontr = (np.sum(normvec[:, np.newaxis, :] * diffs, axis=-1) /  # (np, 2)*(np, npv, 2) -> (npv,)
               norms * fund_der*alpha.reshape(1, -1))
@@ -57,7 +69,7 @@ def neumann_operator(points, normvec, alpha, sourcesv, k, return_diffs=False,
         return vcontr
 
 
-def robin_operator(points, normvec, alpha, sourcesv, k, beta, individual_contr=False):
+def robin_operator(points, normvec, alpha, sourcesv, k, beta, fund_wrap, fund_der_wrap, individual_contr=False):
     if isinstance(beta, (int, float, complex, np.int64, np.float64, np.complex128)):
         beta = np.ones(len(points), dtype=np.complex128)*beta
     else:
@@ -67,7 +79,7 @@ def robin_operator(points, normvec, alpha, sourcesv, k, beta, individual_contr=F
     diffs = points[:, np.newaxis, :] - sourcesv[np.newaxis, :, :]  # (np, npv, 2)
     norms = np.linalg.norm(diffs, axis=-1)  # (np, npv)
     vcontr = ((np.sum(normvec[:, np.newaxis, :] * diffs, axis=-1) / norms *  # (np, 2)*(np, npv, 2) -> (npv,)
-               fundamental_solution_derivative(norms, k) + fundamental_solution(points, sourcesv, k) *
+               fund_der_wrap(norms, k) + fund_wrap(points, sourcesv, k) *
                beta.reshape((-1, 1)) * 1j * k) * alpha.reshape(1, -1))
 
     if not individual_contr:
@@ -76,11 +88,11 @@ def robin_operator(points, normvec, alpha, sourcesv, k, beta, individual_contr=F
     return vcontr
 
 
-def dirichlet_operator(points, _, alpha, sourcesv, k, individual_contr=False):
+def dirichlet_operator(points, _, alpha, sourcesv, k, fund_wrap, individual_contr=False):
     """ Computes the solution given by the virtual sources sourcesv with coefficients alpha at
     the points 'points' with normal vector normvec. Return the contribution from the virtual sources.
     """
-    res = fundamental_solution(points, sourcesv, k) * alpha.reshape(1, -1)
+    res = fund_wrap(points, sourcesv, k) * alpha.reshape(1, -1)
     if not individual_contr:
         res = np.sum(res, axis=1)
     return res
@@ -90,10 +102,10 @@ class HelmholtzMFS:
     def __init__(self, nbound: int, nsrc: int, pos_src: np.ndarray, poly: Polygon,
                  k: float, dx: float = None, cond='neumann', sample_kwargs=None, beta=None, src_nb='total',
                  add_fun=0, get_parametrization=False):
-        if isinstance(poly, Polygon):
-            self.d = 2
-        elif isinstance(poly, ExtrudedPolygon):
-            self.d = 3
+        if isinstance(poly, ExtrudedPolygon):
+            self.d, self.fund_wrap, self.fund_der_wrap = 3, fundamental_solution3d, fundamental_solution_derivative3d
+        elif isinstance(poly, Polygon):
+            self.d, self.fund_wrap, self.fund_der_wrap = 2, fundamental_solution, fundamental_solution_derivative
         else:
             raise ValueError("poly must be a Polygon or ExtrudedPolygon instance")
 
@@ -109,7 +121,7 @@ class HelmholtzMFS:
         self.nbound = len(self.bound)
 
         if get_parametrization:
-            self.param = res[3]
+            self.params = res[3]
         sample_kwargs["min_dist"], sample_kwargs["distribution"] = 0., "uniform"
         if src_nb == 'total':
             boundv, self.normvecv, self.boundv_ids = poly.sample(nsrc, **sample_kwargs, return_nodes=False)
@@ -240,8 +252,8 @@ class HelmholtzMFS:
         return self.ampl, stat
 
     def evaluate_sol(self, points):
-        res = np.sum(fundamental_solution(points, self.boundv, self.k) * self.ampl[:self.nsrc].reshape(1, -1), axis=1)
-        res += np.reshape(fundamental_solution(points, self.pos_src, self.k), -1)
+        res = np.sum(self.fund_wrap(points, self.boundv, self.k) * self.ampl[:self.nsrc].reshape(1, -1), axis=1)
+        res += np.reshape(self.fund_wrap(points, self.pos_src, self.k), -1)
 
         if self.add_fun > 0:
             angles, diffs, norms = self.poly.compute_angles(points)
@@ -269,12 +281,14 @@ class HelmholtzMFS:
             pos = self.boundv
 
         if self.cond == 'neumann':
-            res = neumann_operator(points, normals, alpha[:self.nsrc], pos, self.k, individual_contr=individual_contr)
+            res = neumann_operator(points, normals, alpha[:self.nsrc], pos,
+                                   self.k, fund_der_wrap=self.fund_der_wrap, individual_contr=individual_contr)
         elif self.cond == 'dirichlet':
-            res = dirichlet_operator(points, None, alpha[:self.nsrc], pos, self.k, individual_contr=individual_contr)
+            res = dirichlet_operator(points, None, alpha[:self.nsrc], pos,
+                                     self.k, fund_wrap=self.fund_wrap, individual_contr=individual_contr)
         elif self.cond == 'robin':
-            res = robin_operator(points, normals, alpha[:self.nsrc], pos, self.k, beta,
-                                 individual_contr=individual_contr)
+            res = robin_operator(points, normals, alpha[:self.nsrc], pos, self.k, beta, fund_wrap=self.fund_wrap,
+                                 fund_der_wrap=self.fund_der_wrap, individual_contr=individual_contr)
 
         else:
             raise ValueError("Unknown boundary condition")
@@ -308,73 +322,107 @@ class HelmholtzMFS:
         return res
 
     def plot_bound_values(self, nplot, show=True, name="", plot3d=False):
-        mfs_val, src_val, edges, plot_nodes = [], [], [t * nplot for t in range(1, self.poly.nedges)], []
-        for j in range(self.poly.nedges):
-            plot_nodes.append(self.poly.sample_edge(nplot, j, distribution="uniform"))
-            mfs_val.append(self.boundary_operator(plot_nodes[-1], j*np.ones(nplot, dtype=int)))
-            src_val.append(-self.boundary_operator(plot_nodes[-1], j*np.ones(nplot, dtype=int), use_src=True))
+        if self.d == 2:
+            mfs_val, src_val, edges, plot_nodes = [], [], [t * nplot for t in range(1, self.poly.nedges)], []
+            for j in range(self.poly.nedges):
+                plot_nodes.append(self.poly.sample_edge(nplot, j, distribution="uniform"))
+                mfs_val.append(self.boundary_operator(plot_nodes[-1], j*np.ones(nplot, dtype=int)))
+                src_val.append(-self.boundary_operator(plot_nodes[-1], j*np.ones(nplot, dtype=int), use_src=True))
 
-        mfs_val, src_val = np.concatenate(mfs_val), np.concatenate(src_val)
-        error_real = np.sqrt(np.mean(np.abs(np.real(mfs_val) - np.real(src_val)) ** 2))
-        error_imag = np.sqrt(np.mean(np.abs(np.imag(mfs_val) - np.imag(src_val)) ** 2))
+            mfs_val, src_val = np.concatenate(mfs_val), np.concatenate(src_val)
+            error_real = np.sqrt(np.mean(np.abs(np.real(mfs_val) - np.real(src_val)) ** 2))
+            error_imag = np.sqrt(np.mean(np.abs(np.imag(mfs_val) - np.imag(src_val)) ** 2))
 
-        if plot3d:
-            plot_nodes = np.concatenate(plot_nodes, axis=0)
-            fig = plt.figure(figsize=(20, 10))
-            ax1 = fig.add_subplot(221, projection='3d')
-            ax1.set_title("Real part, nsrc={}, nb={}, error={:3f}".format(self.nsrc, self.nbound, error_real))
-            # plot the boundary values above the polygon
-            ax1.plot(plot_nodes[:, 0], plot_nodes[:, 1], np.real(mfs_val), label="MFS")
-            ax1.plot(plot_nodes[:, 0], plot_nodes[:, 1], np.real(src_val), '--', label="Source contribution")
+            if plot3d:
+                plot_nodes = np.concatenate(plot_nodes, axis=0)
+                fig = plt.figure(figsize=(20, 10))
+                ax1 = fig.add_subplot(221, projection='3d')
+                ax1.set_title("Real part, nsrc={}, nb={}, error={:3f}".format(self.nsrc, self.nbound, error_real))
+                # plot the boundary values above the polygon
+                ax1.plot(plot_nodes[:, 0], plot_nodes[:, 1], np.real(mfs_val), label="MFS")
+                ax1.plot(plot_nodes[:, 0], plot_nodes[:, 1], np.real(src_val), '--', label="Source contribution")
 
-            ax2 = fig.add_subplot(222, projection='3d')
-            ax2.set_title("Imaginary part, error={:3f}".format(error_imag))
-            ax2.plot(plot_nodes[:, 0], plot_nodes[:, 1], np.imag(mfs_val), label="MFS")
-            ax2.plot(plot_nodes[:, 0], plot_nodes[:, 1], np.imag(src_val), '--', label="Source contribution")
+                ax2 = fig.add_subplot(222, projection='3d')
+                ax2.set_title("Imaginary part, error={:3f}".format(error_imag))
+                ax2.plot(plot_nodes[:, 0], plot_nodes[:, 1], np.imag(mfs_val), label="MFS")
+                ax2.plot(plot_nodes[:, 0], plot_nodes[:, 1], np.imag(src_val), '--', label="Source contribution")
 
-            for ax in [ax1, ax2]:  # plot the polygon on the z=0 plane
-                ax.plot(self.poly.vertices[:, 0], self.poly.vertices[:, 1], np.zeros(self.poly.nedges), 'k')
-                ax.plot([self.poly.vertices[0, 0], self.poly.vertices[-1, 0]],
-                        [self.poly.vertices[0, 1], self.poly.vertices[-1, 1]], [0, 0.], 'k')
-            # set equal aspect ratio for the 3d plot
-            max_val = np.max(np.abs(plot_nodes), axis=0)
-            min_val = np.min(np.abs(plot_nodes), axis=0)
-            ax1.set_xlim([min_val[0], max_val[0]]), ax1.set_ylim([min_val[1], max_val[1]])
-            ax2.set_xlim([min_val[0], max_val[0]]), ax2.set_ylim([min_val[1], max_val[1]])
+                for ax in [ax1, ax2]:  # plot the polygon on the z=0 plane
+                    ax.plot(self.poly.vertices[:, 0], self.poly.vertices[:, 1], np.zeros(self.poly.nedges), 'k')
+                    ax.plot([self.poly.vertices[0, 0], self.poly.vertices[-1, 0]],
+                            [self.poly.vertices[0, 1], self.poly.vertices[-1, 1]], [0, 0.], 'k')
+                # set equal aspect ratio for the 3d plot
+                max_val = np.max(np.abs(plot_nodes), axis=0)
+                min_val = np.min(np.abs(plot_nodes), axis=0)
+                ax1.set_xlim([min_val[0], max_val[0]]), ax1.set_ylim([min_val[1], max_val[1]])
+                ax2.set_xlim([min_val[0], max_val[0]]), ax2.set_ylim([min_val[1], max_val[1]])
+                plt.legend()
+
+            else:
+                fig, ax = plt.subplots(2, 2, figsize=(20, 6))
+                ax[0, 0].set_ylim([np.min(src_val.real), np.max(src_val.real)])
+                ax[0, 1].set_ylim([np.min(src_val.imag), np.max(src_val.imag)])
+
+                ax[0, 0].set_title("Real part, nsrc={}, mean error={:3f}".format(self.nsrc, error_real))
+                ax[0, 1].set_title("Imaginary part, mean error={:3f}".format(error_imag))
+                ax[0, 0].plot(np.real(mfs_val), label="MFS")
+                ax[0, 0].plot(np.real(src_val), '--', label="Source contribution")
+                ax[0, 1].plot(np.imag(mfs_val), label="MFS")
+                ax[0, 1].plot(np.imag(src_val), '--', label="Source contribution")
+
+                # add horizontal line at 0
+                ax[0, 0].plot([0, len(mfs_val)], [0, 0], 'k')
+                ax[0, 1].plot([0, len(mfs_val)], [0, 0], 'k')
+                # add vertical bars at each edge change
+                ax[0, 0].vlines(edges, np.min(src_val.real), np.max(src_val.real), colors="k", linestyles="dashed")
+                ax[0, 1].vlines(edges, np.min(src_val.imag), np.max(src_val.imag), colors="k", linestyles="dashed")
+                plt.legend()
+                plt.tight_layout()
+
+            # add a subplot under both plots to show the coefficients
+            ax3 = fig.add_subplot(212)
+            ax3.set_title("Coefficients")
+            ax3.semilogy(np.abs(self.ampl.real), '.', label="real part")
+            ax3.semilogy(np.abs(self.ampl.imag), '.', label="imaginary part")
+            # plot a vline at each edge change (given by value changes in coeffs_id)
+            ax3.vlines(np.where(np.diff(self.boundv_ids) != 0)[0],
+                       np.minimum(np.min(self.ampl.real), np.min(self.ampl.imag)),
+                       np.maximum(np.max(self.ampl.real), np.max(self.ampl.imag)), colors="k", linestyles="dashed")
             plt.legend()
+            if show:
+                plt.show()
+            else:  # save the figure
+                plt.savefig("data/fig/Neumann_edge_{}_nsrc={}.png".format(name, self.nsrc))
 
-        else:
-            fig, ax = plt.subplots(2, 2, figsize=(20, 6))
-            ax[0, 0].set_ylim([np.min(src_val.real), np.max(src_val.real)])
-            ax[0, 1].set_ylim([np.min(src_val.imag), np.max(src_val.imag)])
+        else:  # plot boundary values in 3d, nplot is the separation for the resampled boundary
+            boundplot, normplot, ids, face_shapes = self.poly.sample(nplot, min_dist=0., return_face_shapes=True)
+            print("Plotting {} points on the boundary".format(len(boundplot)))
+            mfs_val = self.boundary_operator(boundplot, ids)
+            src_val = -self.boundary_operator(boundplot, ids, use_src=True)
+            error_real = np.sqrt(np.mean(np.abs(np.real(mfs_val) - np.real(src_val)) ** 2))
+            error_imag = np.sqrt(np.mean(np.abs(np.imag(mfs_val) - np.imag(src_val)) ** 2))
 
-            ax[0, 0].set_title("Real part, nsrc={}, mean error={:3f}".format(self.nsrc, error_real))
-            ax[0, 1].set_title("Imaginary part, mean error={:3f}".format(error_imag))
-            ax[0, 0].plot(np.real(mfs_val), label="MFS")
-            ax[0, 0].plot(np.real(src_val), '--', label="Source contribution")
-            ax[0, 1].plot(np.imag(mfs_val), label="MFS")
-            ax[0, 1].plot(np.imag(src_val), '--', label="Source contribution")
+            ax1 = plt.subplot(121, projection='3d')
+            ax1.set_title("Real part, error={:3f}".format(error_real))
+            ax2 = plt.subplot(122, projection='3d')
+            # define colormap to set same range for all plots
+            import matplotlib as mpl
+            cmap = plt.cm.jet
+            norm = mpl.colors.Normalize(vmin=np.min(mfs_val.real), vmax=np.max(mfs_val.real))
 
-            # add horizontal line at 0
-            ax[0, 0].plot([0, len(mfs_val)], [0, 0], 'k')
-            ax[0, 1].plot([0, len(mfs_val)], [0, 0], 'k')
-            # add vertical bars at each edge change
-            ax[0, 0].vlines(edges, np.min(src_val.real), np.max(src_val.real), colors="k", linestyles="dashed")
-            ax[0, 1].vlines(edges, np.min(src_val.imag), np.max(src_val.imag), colors="k", linestyles="dashed")
-            plt.legend()
-            plt.tight_layout()
+            ax1.set_title("Real part, error={:3f}".format(error_real))
+            for i in range(self.poly.nedges):
+                plot_nodes = boundplot[ids == i]
+                ax1.plot_surface(plot_nodes[:, 0].reshape(face_shapes[i]),
+                                plot_nodes[:, 1].reshape(face_shapes[i]),
+                                plot_nodes[:, 2].reshape(face_shapes[i]),
+                                facecolors=plt.cm.jet(norm(np.real(mfs_val[ids == i]).reshape(face_shapes[i]))))
+                ax2.plot_surface(plot_nodes[:, 0].reshape(face_shapes[i]),
+                                plot_nodes[:, 1].reshape(face_shapes[i]),
+                                plot_nodes[:, 2].reshape(face_shapes[i]),
+                                facecolors=plt.cm.jet(norm(np.real(src_val[ids == i]).reshape(face_shapes[i]))))
 
-        # add a subplot under both plots to show the coefficients
-        ax3 = fig.add_subplot(212)
-        ax3.set_title("Coefficients")
-        ax3.semilogy(np.abs(self.ampl.real), '.', label="real part")
-        ax3.semilogy(np.abs(self.ampl.imag), '.', label="imaginary part")
-        # plot a vline at each edge change (given by value changes in coeffs_id)
-        ax3.vlines(np.where(np.diff(self.boundv_ids) != 0)[0],
-                   np.minimum(np.min(self.ampl.real), np.min(self.ampl.imag)),
-                   np.maximum(np.max(self.ampl.real), np.max(self.ampl.imag)), colors="k", linestyles="dashed")
-        plt.legend()
-        if show:
+            plt.colorbar(mpl.cm.ScalarMappable(norm=norm, cmap=cmap), shrink=0.5, aspect=5)
+            plot_nodes = boundplot[ids == self.poly.nedges]
+            ax1.plot_trisurf(plot_nodes[:, 0], plot_nodes[:, 1], plot_nodes[:, 2], np.real(mfs_val[ids == self.poly.nedges]), cmap='viridis')
             plt.show()
-        else:  # save the figure
-            plt.savefig("data/fig/Neumann_edge_{}_nsrc={}.png".format(name, self.nsrc))

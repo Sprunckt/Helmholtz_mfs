@@ -280,10 +280,8 @@ class Polygon:
         return angles, diffs, norms
 
     def sample_inside(self, sep):
-        with pygmsh.geo.Geometry() as geom:
-            geom.add_polygon(self.vertices[:self.nedges, :2], mesh_size=sep)
-            mesh = geom.generate_mesh()
-        return mesh.points[:, :2]
+        points, triang = gmsh_sampling(self.vertices[:self.nedges, :], mesh_size=sep)
+        return points[:, :2], triang
 class Ellipse:
     def __init__(self, radiusx, radiusy, center=None):
         self.radiusx = radiusx
@@ -315,26 +313,32 @@ class ExtrudedPolygon(Polygon):
         self.vertices, self.normals = vertices, normals
 
     def sample(self, separation, distribution='uniform', min_dist=0.01, sample_type="separation",
-               return_nodes=False, return_face_shapes=False):  # return_nodes is for compatibility with Polygon
+               return_nodes=False, return_triangulation=False):  # return_nodes is for compatibility with Polygon
         if distribution != 'uniform':
             raise NotImplementedError("Only uniform distribution is implemented for extruded polygons.")
 
         renormed_edges = self.edges / np.linalg.norm(self.edges, axis=1)[:, np.newaxis]
 
-        boundary, bound_ids, normals, face_shapes  = [], [], [], []
-        vertical_nodes = np.arange(min_dist, self.height - min_dist, separation)
+        boundary, bound_ids, normals, triangulations  = [], [], [], []
+        e3 = np.array([0, 0, 1], dtype=float)*(self.height - min_dist)
         for i in range(self.nedges):  # vertical faces
-            horizontal_nodes = np.arange(min_dist, self.lengths[i] - min_dist, separation)
-            thor, tvert = np.meshgrid(horizontal_nodes, vertical_nodes)
+            points, triang = gmsh_sampling(np.stack([self.vertices[i] +
+                                                     np.array([renormed_edges[i, 0]*min_dist,
+                                                               renormed_edges[i, 1]*min_dist, min_dist]),
+                                                     self.vertices[(i+1)%self.nedges] +
+                                                     np.array([-renormed_edges[i, 0]*min_dist,
+                                                               -renormed_edges[i, 1]*min_dist, min_dist]),
+                                                     self.vertices[(i+1)%self.nedges] + e3, self.vertices[i] + e3],
+                                                    axis=0),
+                                           mesh_size=separation)
 
-            boundary.append(np.concatenate([self.vertices[i, :2] + thor.reshape(-1, 1)*renormed_edges[i][np.newaxis, :],
-                                            tvert.reshape(-1, 1)], axis=1))
-            bound_ids.append(np.full(thor.size, i))
-            normals.append(np.full([thor.size, 3], self.normals[i]))
-            face_shapes.append(thor.shape)
+            boundary.append(points)
+            bound_ids.append(np.full(points.shape[0], i))
+            normals.append(np.full([points.shape[0], 3], self.normals[i]))
+            triangulations.append(triang)
         # sample bottom and top : mesh the inside of a smaller polygon
         inside_poly = self.shift(-min_dist)
-        points = inside_poly.sample_inside(separation)
+        points, triang = inside_poly.sample_inside(separation)
         boundary.append(np.concatenate([points, np.zeros([points.shape[0], 1])], axis=1) ) # bottom
         boundary.append(boundary[-1].copy())  # top
         boundary[-1][:, 2] = self.height
@@ -343,13 +347,14 @@ class ExtrudedPolygon(Polygon):
         normals.append(np.full((points.shape[0], 3), [0., 0., 1.]))
         bound_ids.append(np.full(points.shape[0], self.nedges))
         bound_ids.append(np.full(points.shape[0], self.nedges + 1))
-
+        triangulations.append(triang)
+        triangulations.append(triangulations[-1].copy())
         res = (np.concatenate(boundary), np.concatenate(normals), np.concatenate(bound_ids))
         if return_nodes:
             res += (None,)
 
-        if return_face_shapes:
-            res += (face_shapes,)
+        if return_triangulation:
+            res += (triangulations,)
         return res
 
 
@@ -368,3 +373,10 @@ def is_in(vertices, points, min_dist=0.0):
         pp = ShapelyPoint(p)
         outside[i] = (poly.contains(pp)) and (poly.hausdorff_distance(pp) > min_dist)
     return outside
+
+
+def gmsh_sampling(vertices, mesh_size):
+    with pygmsh.geo.Geometry() as geom:
+        geom.add_polygon(vertices, mesh_size=mesh_size)
+        mesh = geom.generate_mesh()
+    return mesh.points, mesh.cells_dict["triangle"]

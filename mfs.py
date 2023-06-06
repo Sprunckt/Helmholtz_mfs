@@ -6,7 +6,7 @@ from utils import Polygon, ExtrudedPolygon
 from scipy.integrate import simpson
 import time
 import matplotlib.pyplot as plt
-
+from mayavi import mlab
 
 def fundamental_solution(points, sources, k):
     """Compute the fundamental solution at the points given the sources, return a matrix of shape npoints, nsources."""
@@ -395,34 +395,26 @@ class HelmholtzMFS:
                 plt.savefig("data/fig/Neumann_edge_{}_nsrc={}.png".format(name, self.nsrc))
 
         else:  # plot boundary values in 3d, nplot is the separation for the resampled boundary
-            boundplot, normplot, ids, face_shapes = self.poly.sample(nplot, min_dist=0., return_face_shapes=True)
+            boundplot, normplot, ids, tri = self.poly.sample(nplot, min_dist=0., return_triangulation=True)
             print("Plotting {} points on the boundary".format(len(boundplot)))
             mfs_val = self.boundary_operator(boundplot, ids)
             src_val = -self.boundary_operator(boundplot, ids, use_src=True)
-            error_real = np.sqrt(np.mean(np.abs(np.real(mfs_val) - np.real(src_val)) ** 2))
-            error_imag = np.sqrt(np.mean(np.abs(np.imag(mfs_val) - np.imag(src_val)) ** 2))
-
-            ax1 = plt.subplot(121, projection='3d')
-            ax1.set_title("Real part, error={:3f}".format(error_real))
-            ax2 = plt.subplot(122, projection='3d')
-            # define colormap to set same range for all plots
-            import matplotlib as mpl
-            cmap = plt.cm.jet
-            norm = mpl.colors.Normalize(vmin=np.min(mfs_val.real), vmax=np.max(mfs_val.real))
-
-            ax1.set_title("Real part, error={:3f}".format(error_real))
-            for i in range(self.poly.nedges):
+            error_real = np.sqrt(np.sum((np.real(mfs_val) - np.real(src_val)) ** 2))/np.linalg.norm(src_val.real)
+            error_imag = np.sqrt(np.sum((np.imag(mfs_val) - np.imag(src_val)) ** 2))/np.linalg.norm(src_val.imag)
+            print("Mean error on the real part: {:3f}".format(error_real))
+            print("Mean error on the imaginary part: {:3f}".format(error_imag))
+            mlab.figure()
+            for i in range(self.poly.nedges+2):
                 plot_nodes = boundplot[ids == i]
-                ax1.plot_surface(plot_nodes[:, 0].reshape(face_shapes[i]),
-                                plot_nodes[:, 1].reshape(face_shapes[i]),
-                                plot_nodes[:, 2].reshape(face_shapes[i]),
-                                facecolors=plt.cm.jet(norm(np.real(mfs_val[ids == i]).reshape(face_shapes[i]))))
-                ax2.plot_surface(plot_nodes[:, 0].reshape(face_shapes[i]),
-                                plot_nodes[:, 1].reshape(face_shapes[i]),
-                                plot_nodes[:, 2].reshape(face_shapes[i]),
-                                facecolors=plt.cm.jet(norm(np.real(src_val[ids == i]).reshape(face_shapes[i]))))
-
-            plt.colorbar(mpl.cm.ScalarMappable(norm=norm, cmap=cmap), shrink=0.5, aspect=5)
-            plot_nodes = boundplot[ids == self.poly.nedges]
-            ax1.plot_trisurf(plot_nodes[:, 0], plot_nodes[:, 1], plot_nodes[:, 2], np.real(mfs_val[ids == self.poly.nedges]), cmap='viridis')
-            plt.show()
+                triz = tri[i]
+                mesh = mlab.triangular_mesh(plot_nodes[:, 0], plot_nodes[:, 1], plot_nodes[:, 2], triz,
+                                            scalars=np.real(mfs_val[ids == i]), representation='surface')
+            mlab.colorbar()
+            mlab.figure()
+            for i in range(self.poly.nedges+2):
+                plot_nodes = boundplot[ids == i]
+                triz = tri[i]
+                mesh = mlab.triangular_mesh(plot_nodes[:, 0], plot_nodes[:, 1], plot_nodes[:, 2],
+                                            triz, scalars=np.real(src_val[ids == i]), representation='surface')
+            mlab.colorbar(orientation='vertical')
+            mlab.show()

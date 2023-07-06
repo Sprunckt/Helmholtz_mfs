@@ -8,6 +8,7 @@ import time
 import matplotlib.pyplot as plt
 from mayavi import mlab
 
+
 def fundamental_solution(points, sources, k):
     """Compute the fundamental solution at the points given the sources, return a matrix of shape npoints, nsources."""
     return (1j/4) * hankel1(0, k*np.linalg.norm(points[:, np.newaxis, :] - sources[np.newaxis, :, :], axis=-1))
@@ -128,7 +129,10 @@ class HelmholtzMFS:
         elif src_nb == 'per_wavelength':  # sample nsrc points per wavelength
             src_sep = 2*np.pi/k/(nsrc - 1)
             boundv, self.normvecv, self.boundv_ids = poly.sample(src_sep, **sample_kwargs,
-                                                                 sample_type="sep", return_nodes=False)
+                                                                 sample_type="separation", return_nodes=False)
+        elif src_nb == "separation":
+            boundv, self.normvecv, self.boundv_ids = poly.sample(nsrc, **sample_kwargs,
+                                                                 sample_type="separation", return_nodes=False)
         else:
             raise ValueError("src_nb must be 'total' or 'per_wavelength'")
         self.boundv = boundv + dx*self.normvecv
@@ -401,20 +405,22 @@ class HelmholtzMFS:
             src_val = -self.boundary_operator(boundplot, ids, use_src=True)
             error_real = np.sqrt(np.sum((np.real(mfs_val) - np.real(src_val)) ** 2))/np.linalg.norm(src_val.real)
             error_imag = np.sqrt(np.sum((np.imag(mfs_val) - np.imag(src_val)) ** 2))/np.linalg.norm(src_val.imag)
-            print("Mean error on the real part: {:3f}".format(error_real))
-            print("Mean error on the imaginary part: {:3f}".format(error_imag))
+            print("Relative error on the real part: {:3f}".format(error_real))
+            print("Relative error on the imaginary part: {:3f}".format(error_imag))
             mlab.figure()
             for i in range(self.poly.nedges+2):
                 plot_nodes = boundplot[ids == i]
                 triz = tri[i]
                 mesh = mlab.triangular_mesh(plot_nodes[:, 0], plot_nodes[:, 1], plot_nodes[:, 2], triz,
                                             scalars=np.real(mfs_val[ids == i]), representation='surface')
-            mlab.colorbar()
+            cbar = mlab.colorbar(orientation='vertical')
+            drange = cbar.data_range
             mlab.figure()
             for i in range(self.poly.nedges+2):
                 plot_nodes = boundplot[ids == i]
                 triz = tri[i]
                 mesh = mlab.triangular_mesh(plot_nodes[:, 0], plot_nodes[:, 1], plot_nodes[:, 2],
-                                            triz, scalars=np.real(src_val[ids == i]), representation='surface')
-            mlab.colorbar(orientation='vertical')
+                                            triz, scalars=np.clip(np.real(src_val[ids == i]),drange[0], drange[1]), representation='surface')
+            cbar2 = mlab.colorbar(orientation='vertical')
+            cbar2.data_range = drange
             mlab.show()

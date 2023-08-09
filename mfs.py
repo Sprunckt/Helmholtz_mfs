@@ -100,9 +100,9 @@ def dirichlet_operator(points, _, alpha, sourcesv, k, fund_wrap, individual_cont
 
 
 class HelmholtzMFS:
-    def __init__(self, nbound: int, nsrc: int, pos_src: np.ndarray, poly: Polygon,
+    def __init__(self, nbound, nsrc, pos_src: np.ndarray, poly: Polygon,
                  k: float, dx: float = None, cond='neumann', sample_kwargs=None, beta=None, src_nb='total',
-                 add_fun=0, get_parametrization=False):
+                 add_fun=0, get_parametrization=False, ampl=None):
         if isinstance(poly, ExtrudedPolygon):
             self.d, self.fund_wrap, self.fund_der_wrap = 3, fundamental_solution3d, fundamental_solution_derivative3d
         elif isinstance(poly, Polygon):
@@ -115,40 +115,53 @@ class HelmholtzMFS:
         self.poly = poly
         self.k = k
         self.cond = cond
+        self.add_fun = add_fun
+
         if sample_kwargs is None:
             sample_kwargs = {"distribution": 'uniform', "min_dist": 0.01}
-        res = poly.sample(nbound, **sample_kwargs, return_nodes=get_parametrization)
+
+        if sample_kwargs.get("no_resample"):  # in that case nbound contains the sampled boundary points and normals
+            res = nbound
+        else:
+            res = poly.sample(nbound, **sample_kwargs, return_nodes=get_parametrization)
+
         self.bound, self.normvec, self.bound_ids = res[:3]
         self.nbound = len(self.bound)
 
         if get_parametrization:
             self.params = res[3]
-        sample_kwargs["min_dist"], sample_kwargs["distribution"] = 0., "uniform"
-        if src_nb == 'total':
-            boundv, self.normvecv, self.boundv_ids = poly.sample(nsrc, **sample_kwargs, return_nodes=False)
-        elif src_nb == 'per_wavelength':  # sample nsrc points per wavelength
-            src_sep = 2*np.pi/k/(nsrc - 1)
-            boundv, self.normvecv, self.boundv_ids = poly.sample(src_sep, **sample_kwargs,
-                                                                 sample_type="separation", return_nodes=False)
-        elif src_nb == "separation":
-            boundv, self.normvecv, self.boundv_ids = poly.sample(nsrc, **sample_kwargs,
-                                                                 sample_type="separation", return_nodes=False)
+        sample_kwargs["min_dist"] = 0.
+
+        if sample_kwargs.get("no_resample"):  # in that case nsrc contains the sampled virtual sources
+            self.boundv, self.boundv_ids = nsrc
         else:
-            raise ValueError("src_nb must be 'total' or 'per_wavelength'")
-        self.boundv = boundv + dx*self.normvecv
+            if src_nb == 'total':
+                boundv, normvecv, self.boundv_ids = poly.sample(nsrc, **sample_kwargs, return_nodes=False)
+            elif src_nb == 'per_wavelength':  # sample nsrc points per wavelength
+                src_sep = 2*np.pi/k/(nsrc - 1)
+                boundv, normvecv, self.boundv_ids = poly.sample(src_sep, **sample_kwargs,
+                                                                sample_type="separation", return_nodes=False)
+            elif src_nb == "separation":
+                boundv, normvecv, self.boundv_ids = poly.sample(nsrc, **sample_kwargs,
+                                                                sample_type="separation", return_nodes=False)
+            elif src_nb == "same":
+                boundv, normvecv, self.boundv_ids = nsrc
+            else:
+                raise ValueError("src_nb must be 'total', 'per_wavelength', separation or same")
+            self.boundv = boundv + dx*normvecv
 
         self.nsrc = len(self.boundv)
-
-        # self.boundv = poly.sample_rounded(self.nsrc, dx, factor=1, one_per_corner=True)
 
         if beta is None:
             self.beta = np.zeros(self.nbound)
         else:
             self.beta = beta*np.ones(self.nbound)
 
-        self.ampl = np.zeros(self.nsrc, dtype=np.complex128)
+        if ampl is not None:
+            self.ampl = ampl
+        else:
+            self.ampl = np.zeros(self.nsrc, dtype=np.complex128)
 
-        self.add_fun = add_fun
         self.factor = np.pi / self.poly.angles[np.newaxis, :]  # angular factor for particular solution
 
     def gram_fit(self, verbose=True, lam=None):
@@ -424,3 +437,25 @@ class HelmholtzMFS:
             cbar2 = mlab.colorbar(orientation='vertical')
             cbar2.data_range = drange
             mlab.show()
+
+    def plot_boundary(self, show=True):
+        """Plot the boundary of the polygon and the sources"""
+        fig, ax = plt.subplots(1, 1, figsize=(8, 8))
+        ax.set_title("Boundary of the polygon")
+        ax.set_aspect('equal')
+        ax.scatter(self.bound[:, 0], self.bound[:, 1], c='k', label="boundary")
+        ax.scatter(self.boundv[:, 0], self.boundv[:, 1], c='r', label="virtual boundary")
+        plt.legend()
+        if show:
+            plt.show()
+
+    def update_sources(self, new_boundv, new_boundvids):
+        self.boundv = new_boundv
+        self.boundv_ids = new_boundvids
+        self.nsrc = self.boundv.shape[0]
+
+    def update_boundary(self, new_bound, new_normvec, new_ids):
+        self.bound = new_bound
+        self.normvec = new_normvec
+        self.bound_ids = new_ids
+        self.nbound = self.bound.shape[0]

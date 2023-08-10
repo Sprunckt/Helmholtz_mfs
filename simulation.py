@@ -1,6 +1,6 @@
 import numpy as np
 from mfs import HelmholtzMFS
-from utils import Polygon, c
+from utils import Polygon, c, is_in
 import multiprocessing as mp
 import time
 import matplotlib.pyplot as plt
@@ -176,16 +176,22 @@ class Simulation:
 
         print("total simulation time : {} s".format(time.time()-t1))
 
-    def compute(self, compute_points, nworkers):
+    def compute(self, compute_points, nworkers, tol=0.):
         """Compute the solution at the given points (shape (npoints, d)) at all frequencies"""
         t1 = time.time()
+        in_mask = is_in(self.mfs.poly.vertices, compute_points, min_dist=tol)
 
-        npoints = len(compute_points)
+        res_tot = np.full([len(compute_points), self.nfreqs], np.nan, dtype=np.complex128)
+        res_tot[in_mask, 0] = 0.  # 0 frequency
+
+        npoints = in_mask.sum()
+        ind_comp = np.where(in_mask)[0]
+        to_compute = np.reshape(compute_points[ind_comp], [npoints, -1])
 
         if nworkers == 1:
-            res = np.zeros([npoints, self.nfreqs], dtype=np.complex128)
+            res = np.zeros([npoints, self.nfreqs - 1], dtype=np.complex128)
             for i in range(1, self.nfreqs):
-                res[:, i] = self.compute_freq(compute_points, i)
+                res[:, i] = self.compute_freq(to_compute, i)
         else:
             if nworkers < 0:
                 # use all available cores
@@ -193,17 +199,16 @@ class Simulation:
             else:
                 pool = mp.Pool(processes=nworkers)
             # local function to compute the solution at a given frequency, take only ind as argument
-            fun = partial(self.compute_freq, compute_points)
-            res = np.array(pool.map(fun,
-                                    np.arange(1, self.nfreqs)))
+            fun = partial(self.compute_freq, to_compute)
+            res = np.stack(pool.map(fun, np.arange(1, self.nfreqs)), axis=1)
             pool.close()
-            # append 0 frequency
-            res = np.concatenate([np.zeros([npoints, 1], dtype=np.complex128),
-                                  np.reshape(res, [-1, self.nfreqs-1])], axis=1)
-        t2 = time.time()
-        print("total computation time : {} s".format(t2-t1))
 
-        return res
+        res_tot[ind_comp, 1:] = res
+
+        t2 = time.time()
+        print("total computation time : {} s".format(t2 - t1))
+
+        return res_tot, in_mask
 
     def freq_to_time(self, freq_res, decay=None):
         """Convert the frequency response to the time impulse response"""

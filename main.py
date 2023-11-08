@@ -25,7 +25,7 @@ xx, yy = np.meshgrid(np.linspace(0, lx, npo), np.linspace(0., ly, npo))
 points = np.stack([xx.ravel(), yy.ravel()], axis=1)
 
 smfs = HelmholtzMFS(nbound=nbound, nsrc=100, pos_src=pos_src, k=k, poly=poly,
-                    dx=dx, cond=boundary_cond, beta=beta, src_nb="total", add_fun=0)
+                    dx=dx, cond=boundary_cond, beta=[beta for _ in range(len(vertices))], src_nb="total", add_fun=0)
 
 # plot boundary and source
 plot_boundary(smfs.bound, smfs.normvec, smfs.boundv, pos_src)

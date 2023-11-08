@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from shapely.geometry import Polygon as ShapelyPolygon
 from shapely.geometry import Point as ShapelyPoint
+import pygmsh
 c = 343
 
 
@@ -24,46 +25,9 @@ def plot_complex(xx, yy, data, extent, vmin=None, vmax=None):
     plt.show()
 
 
-def sample_rectangle(npoints, lx, ly, dedge=0.015):
-    dx = 2*(lx + ly) / npoints
-    nx = int(np.rint(lx / dx))
-    ny = (npoints - 2*nx) // 2
-    res = npoints - 2*nx - 2*ny
-
-    x = np.linspace(dedge, lx-dedge, nx, endpoint=True)
-    yright = np.linspace(dedge, ly-dedge, ny, endpoint=True)
-    yleft = np.linspace(dedge, ly-dedge, ny+res, endpoint=True)
-    return (np.stack([np.concatenate([x, lx*np.ones_like(yright), x[::-1], np.zeros_like(yleft)]),
-                     np.concatenate([np.zeros_like(x), yright, ly*np.ones_like(x), yleft[::-1]])], axis=1),
-            np.stack([np.concatenate([np.zeros_like(x), np.ones_like(yright), np.zeros_like(x), -np.ones_like(yleft)]),
-                      np.concatenate([-np.ones_like(x), np.zeros_like(yright), np.ones_like(x), np.zeros_like(yleft)])],
-                     axis=1))
-
-
 def chebyshev_nodes(a, b, N):
     """Compute N Chebyshev nodes on the interval [a, b]."""
     return 0.5*(a + b) + 0.5*(b - a)*np.cos(np.pi*(2*np.arange(N)[::-1] + 1) / (2*N))
-
-
-def sample_polygon(npoints, vertices, distribution="linear"):
-    """Compute the boundary and outside normal vectors of a polygon using Chebyshev nodes to sample the edges."""
-    lengths = np.linalg.norm(vertices - np.roll(vertices, -1, axis=0), axis=1)
-    lengths /= np.sum(lengths)
-    lengths = np.round(lengths * npoints).astype(int)
-    lengths[-1] += npoints - np.sum(lengths)
-    boundary = np.zeros((npoints, 2))
-    normal = np.zeros((npoints, 2))
-    indstart = 0
-    for i, (v1, v2, l) in enumerate(zip(vertices, np.roll(vertices, -1, axis=0), lengths)):
-        edge = v2 - v1
-        normal[indstart:indstart + l, :] = np.reshape(np.array([edge[1], -edge[0]]), (1, 2))
-        if distribution == "linear":
-            nodes = np.linspace(0, 1, l+2)[1:-1]
-        else:
-            nodes = chebyshev_nodes(0, 1, l)
-        boundary[indstart:indstart + l, :] = v1 + edge * nodes[:, np.newaxis]
-        indstart += l
-    return boundary, normal / np.linalg.norm(normal, axis=1)[:, np.newaxis]
 
 
 def sample_points_on_circle(center, radius, start_vec, end_vec, num_points):
@@ -126,25 +90,6 @@ def sample_cuboid_chebyshev(npoints, lx, ly, lz):
     return points, normals / np.linalg.norm(normals, axis=1)[:, np.newaxis]
 
 
-def sample_ellipse(npoints, radiusx, radiusy):
-    theta = np.linspace(0, 2*np.pi, npoints)
-    normvec = np.stack([radiusy*np.cos(theta), radiusx*np.sin(theta)], axis=1)
-    return (np.stack([radiusx*np.cos(theta), radiusy*np.sin(theta)], axis=1),
-            normvec / np.linalg.norm(normvec, axis=1)[:, np.newaxis])
-
-
-def compute_normals(boundary):
-    """Compute the normal vectors to the boundary given by its vertices in counter-clockwise order. Use the formula :
-    n = (-y_{i+1} + y_{i-1}, -x_{i-1} + x_{i+1})/2"""
-    normals = np.stack([-np.roll(boundary[:, 1], 1) + np.roll(boundary[:, 1], -1),
-                        -np.roll(boundary[:, 0], -1) + np.roll(boundary[:, 0], 1)], axis=1)
-    return normals / np.linalg.norm(normals, axis=1)[:, np.newaxis]
-
-
-def translate_boundary(boundary, normal, offset):
-    return boundary + offset*normal
-
-
 def out_polygon(points, vertices, min_dist=0.0):
     """Check if points (shape (npoints, d)) are outside and at a distance superior to min_dist of a (not necessarily
     convex) polygon given by its vertices (shape (nvertices, d)) in counter-clockwise order, or by a Polygon object.
@@ -190,11 +135,16 @@ class Polygon:
         # compute polar angles of each edge with respect to the x-axis, in [0, 2pi]
         self.polar_angles = mod2pi(np.arctan2(edges[:, 1], edges[:, 0]))
 
-    def enlarge(self, factor):
-        """Enlarge the polygon by a factor, by moving the vertices along their normals."""
-        barycenter = np.mean(self.vertices, axis=0)
-        vertices_shifted = self.vertices - barycenter
-        self.vertices = vertices_shifted * factor + barycenter
+    def shift(self, factor):
+        """Shift the polygon by a factor, by moving the vertices along the bisecting line.
+        Return a new 2D Polygon object."""
+
+        barycenter = np.mean(self.vertices[:self.nedges, :2], axis=0)
+        vertices_shifted = self.vertices[:self.nedges, :2] - barycenter
+        vertices = (vertices_shifted * factor / np.linalg.norm(vertices_shifted, axis=-1)[:, np.newaxis] +
+                    self.vertices[:self.nedges, :2])
+
+        return Polygon(vertices)
 
     def sample_edge(self, n, edge_id, distribution='uniform', sample_type="total", min_dist=None, return_nodes=False):
         if distribution == "uniform":
@@ -202,7 +152,7 @@ class Polygon:
                 if sample_type == "total":
                     nodes = np.linspace(0, 1, n + 2)[1:-1]
                 else:  # n is the step
-                    nodes = np.arange(0, 1, n)[1:]
+                    nodes = np.arange(0, 1, n / self.lengths[edge_id])[1:]  # might end on the last point
             else:
                 relative_dist = min_dist / self.lengths[edge_id]
 
@@ -222,8 +172,7 @@ class Polygon:
         else:
             return res
 
-    def sample(self, npoints, distribution='uniform', min_dist=None, sample_type="total",
-               return_ids=False, return_nodes=False):
+    def sample(self, npoints, distribution='uniform', min_dist=None, sample_type="total", return_nodes=False):
         if sample_type == 'total':
             lengths = self.lengths / np.sum(self.lengths)
             lengths = np.round(lengths * npoints).astype(int)
@@ -242,73 +191,20 @@ class Polygon:
             boundary.append(boundary_edge)
             npb = len(nodes)
             normals.append(np.repeat(self.normals[i].reshape([1, -1]), npb, axis=0))
-            if return_ids:
-                ids.append([i]*npb)
+            ids.append([i]*npb)
+
             if return_nodes:
                 params.append(nodes)
 
-        boundary = np.concatenate(boundary, axis=0)
-        normals = np.concatenate(normals, axis=0)
-        res = (boundary, normals)
-        if return_ids:
-            ids = np.concatenate(ids)
-            res += (ids,)
+        boundary, normals = np.concatenate(boundary, axis=0), np.concatenate(normals, axis=0)
+        ids = np.concatenate(ids, axis=0)
+        res = (boundary, normals, ids)
+
         if return_nodes:
             params = np.concatenate(params)
             res += (params,)
 
         return res
-
-    def sample_rounded(self, npoints, radius, factor=1, one_per_corner=False):
-        """Sample on an enlarged version of the polygon (boundary translated by radius in the normal direction), with
-            rounded edges."""
-        # compute number of points for each edge and rounded corner
-        lengths = np.zeros(2 * len(self.vertices))
-        lengths[::2] = np.linalg.norm(self.vertices - np.roll(self.vertices, -1, axis=0), axis=1)
-        normals = np.roll(self.vertices, -1, axis=0) - self.vertices
-        normals = np.stack([normals[:, 1], -normals[:, 0]], axis=1)
-        normals /= np.linalg.norm(normals, axis=1)[:, np.newaxis]
-
-        if one_per_corner:
-            lengths[1::2] = 1
-            lengths[::2] = np.round(lengths[::2]/np.sum(lengths[::2]) * (npoints-self.nedges))
-            lengths = np.round(lengths).astype(int)
-        else:
-            # add rounded corners, ponderate each corner by angle
-            angles = np.arccos(np.sum(normals * np.roll(normals, -1, axis=0), axis=1))
-            lengths[1::2] = np.roll(angles, 1) * radius * factor
-            lengths /= np.sum(lengths)
-            lengths = np.round(lengths * npoints).astype(int)
-
-        lengths[-1] += npoints - np.sum(lengths)
-
-        boundary = np.zeros((npoints, 2))
-        indstart = 0
-        for i in range(len(lengths)):
-            le = lengths[i]
-            v1, v2 = self.vertices[i // 2], self.vertices[(i // 2 + 1) % len(self.vertices)]
-            if i % 2 == 0:
-                edge = v2 - v1
-                boundary[indstart:indstart + le, :] = v1 + normals[i // 2] * radius + edge * np.linspace(0, 1, le)[
-                                                                                             :, np.newaxis]
-            else:
-                vect1, vect2 = normals[i // 2 - 1], normals[i // 2]
-                boundary[indstart:indstart + le, :] = sample_points_on_circle(v1, radius, vect1, vect2, le + 2)[1:-1, :]
-            indstart += le
-
-        return boundary
-
-    def is_out(self, points, min_dist=0.0):
-        """Check if points (shape (npoints, d)) are outside and at a distance superior to min_dist of a (not necessarily
-         convex) polygon given by its vertices (shape (nvertices, d)) in counter-clockwise order, or by a Polygon object.
-        Return an array of bool."""
-        outside = np.zeros(points.shape[0], dtype=bool)
-        poly = ShapelyPolygon(self.vertices)
-
-        for i, p in enumerate(points):
-            pp = ShapelyPoint(p)
-            outside[i] = (not poly.contains(pp)) and (poly.distance(pp) > min_dist)
-        return outside
 
     def get_normal(self, edge_id):
         return self.normals[edge_id]
@@ -318,20 +214,6 @@ class Polygon:
         corresponding coordinates in 2D"""
         v1, v2 = self.vertices[edge_id], self.vertices[(edge_id + 1) % self.nedges]
         return v1 + param[:, np.newaxis] * (v2 - v1)
-
-    def get_image_source(self, pos):
-        """Return the image source corresponding to the positions pos (shape (npoints, 2)) with respect to each edge of
-        the polygon. Return an array of shape (npoints*nedges, 2)."""
-        res = np.zeros((pos.shape[0] * self.nedges, 2))
-        for i in range(self.nedges):
-            # compute distance from each pos to each edge of the polygon
-            v1, v2 = self.vertices[i], self.vertices[(i + 1) % self.nedges]
-            vect = v2 - v1
-            dist = np.sum((pos - v1) * vect, axis=1)
-            proj = v1 + dist[:, np.newaxis] * vect / np.sum(vect ** 2)
-            # compute image source
-            res[i * pos.shape[0]:(i + 1) * pos.shape[0], :] = proj + np.linalg.norm(proj - pos, axis=1)[:, np.newaxis] * self.normals[i]
-        return res
 
     def compute_angles(self, points):
         """Compute polar angles of points with respect to the vertices of the polygon, using the next edge (in
@@ -343,6 +225,10 @@ class Polygon:
         angles = mod2pi(mod2pi(np.arctan2(diffs[:, :, 1], diffs[:, :, 0])) - self.polar_angles[np.newaxis, :])
 
         return angles, diffs, norms
+
+    def sample_inside(self, sep):
+        points, triang = gmsh_sampling(self.vertices[:self.nedges, :], mesh_size=sep)
+        return points[:, :2], triang
 
 
 class Ellipse:
@@ -361,6 +247,85 @@ class Ellipse:
                 normvec / np.linalg.norm(normvec, axis=1)[:, np.newaxis])
 
 
+class ExtrudedPolygon(Polygon):
+    def __init__(self, vertices, height):
+        super().__init__(vertices)
+        self.height = height
+        vertices = np.zeros((2 * self.nedges, 3))
+        vertices[:self.nedges, :2], vertices[self.nedges:, :2] = self.vertices.copy(), self.vertices.copy()
+        vertices[self.nedges:, 2] = self.height
+
+        normals = np.zeros((self.nedges + 2, 3))
+        normals[:self.nedges, :2] = self.normals.copy()
+        normals[self.nedges, 2], normals[self.nedges + 1, 2] = -1., 1.  # bottom and top normals
+
+        self.vertices, self.normals = vertices, normals
+
+    def sample(self, separation, distribution='uniform', min_dist=0.01, sample_type="separation",
+               return_nodes=False, return_triangulation=False):  # return_nodes is for compatibility with Polygon
+        if distribution != 'uniform':
+            raise NotImplementedError("Only uniform distribution is implemented for extruded polygons.")
+
+        renormed_edges = self.edges / np.linalg.norm(self.edges, axis=1)[:, np.newaxis]
+
+        boundary, bound_ids, normals, triangulations  = [], [], [], []
+        e3 = np.array([0, 0, 1], dtype=float)*(self.height - min_dist)
+        for i in range(self.nedges):  # vertical faces
+            points, triang = gmsh_sampling(np.stack([self.vertices[i] +
+                                                     np.array([renormed_edges[i, 0]*min_dist,
+                                                               renormed_edges[i, 1]*min_dist, min_dist]),
+                                                     self.vertices[(i+1)%self.nedges] +
+                                                     np.array([-renormed_edges[i, 0]*min_dist,
+                                                               -renormed_edges[i, 1]*min_dist, min_dist]),
+                                                     self.vertices[(i+1)%self.nedges] + e3, self.vertices[i] + e3],
+                                                    axis=0),
+                                           mesh_size=separation)
+
+            boundary.append(points)
+            bound_ids.append(np.full(points.shape[0], i))
+            normals.append(np.full([points.shape[0], 3], self.normals[i]))
+            triangulations.append(triang)
+        # sample bottom and top : mesh the inside of a smaller polygon
+        inside_poly = self.shift(-min_dist)
+        points, triang = inside_poly.sample_inside(separation)
+        boundary.append(np.concatenate([points, np.zeros([points.shape[0], 1])], axis=1) ) # bottom
+        boundary.append(boundary[-1].copy())  # top
+        boundary[-1][:, 2] = self.height
+
+        normals.append(np.full((points.shape[0], 3), [0., 0., -1.]))
+        normals.append(np.full((points.shape[0], 3), [0., 0., 1.]))
+        bound_ids.append(np.full(points.shape[0], self.nedges))
+        bound_ids.append(np.full(points.shape[0], self.nedges + 1))
+        triangulations.append(triang)
+        triangulations.append(triangulations[-1].copy())
+        res = (np.concatenate(boundary), np.concatenate(normals), np.concatenate(bound_ids))
+        if return_nodes:
+            res += (None,)
+
+        if return_triangulation:
+            res += (triangulations,)
+        return res
+
+
 def mod2pi(angle):
     """Return angle modulo 2*pi"""
     return (angle + 2.) % (2 * np.pi) - 2.
+
+
+def is_in(vertices, points, min_dist=0.0):
+    """Check if points (shape (npoints, d)) are inside and at a distance superior to min_dist of a (not necessarily
+     convex) polygon given by its vertices (shape (nvertices, d)) in counter-clockwise order, or by a Polygon object.
+    Return an array of bool."""
+    outside = np.zeros(points.shape[0], dtype=bool)
+    poly = ShapelyPolygon(vertices)
+    for i, p in enumerate(points):
+        pp = ShapelyPoint(p)
+        outside[i] = (poly.contains(pp)) and (poly.hausdorff_distance(pp) > min_dist)
+    return outside
+
+
+def gmsh_sampling(vertices, mesh_size):
+    with pygmsh.geo.Geometry() as geom:
+        geom.add_polygon(vertices, mesh_size=mesh_size)
+        mesh = geom.generate_mesh()
+    return mesh.points, mesh.cells_dict["triangle"]

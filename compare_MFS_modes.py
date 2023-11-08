@@ -5,8 +5,6 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as colors
 from utils import plot_boundary, Polygon, c
 from mfs import HelmholtzMFS
-from matplotlib.animation import FuncAnimation
-import time
 
 import pyroomacoustics as pra
 std_off = pra.constants.get("frac_delay_length") // 2
@@ -54,7 +52,7 @@ if test_type == "convergence":  # test convergence against analytical eigenmodes
 
             print("fitting for frequency {} Hz with {} sources".format(fs, npo))
             smfs = HelmholtzMFS(nbound=npo, nsrc=npo, pos_src=pos_src, k=k, poly=poly, dx=dx,
-                                cond=bound_cond, beta=beta, add_fun=0)
+                                cond=bound_cond, beta=[beta for _ in range(len(vertices))], add_fun=0)
 
             if plot_bound:  # plot boundary
                 plot_boundary(smfs.bound, smfs.normvec, smfs.boundv, pos_src)
@@ -125,7 +123,7 @@ elif test_type == "comsol_polygon":
 
         for indp, npo in enumerate(npoints):
             smfs = HelmholtzMFS(nbound=np.maximum(1000, npo), nsrc=npo, pos_src=pos_src, k=k, poly=poly,
-                                dx=dx, cond=bound_cond, beta=beta, src_nb="total", add_fun=5)
+                                dx=dx, cond=bound_cond, beta=[beta for _ in range(len(vertices))], src_nb="total", add_fun=5)
 
             print("Solving for frequency {} Hz with {} sources".format(f, smfs.nsrc))
 
@@ -194,7 +192,7 @@ elif test_type == "comsol_modes":
         print("l2 error fem-analytical :", l2_comsol_analytical[indf])
         for indp, npo in enumerate(npoints):
             smfs = HelmholtzMFS(nbound=npo, nsrc=npo, pos_src=pos_src, k=k, poly=poly, dx=dx,
-                                cond=bound_cond, beta=beta, add_fun=0)
+                                cond=bound_cond, beta=[beta for _ in range(len(vertices))], add_fun=0)
 
             # plot boundary
             if plot_bound:
@@ -253,7 +251,8 @@ if test_type == "compare_robin_rect":
 
         for indp, npo in enumerate(npoints):
             smfs = HelmholtzMFS(nbound=np.maximum(2000, npo), nsrc=npo, pos_src=pos_src, k=k, poly=poly,
-                                dx=dx, cond="robin", beta=beta, src_nb="total", add_fun=0)
+                                dx=dx, cond="robin", beta=[beta for _ in range(len(vertices))],
+                                src_nb="total", add_fun=0)
 
             print("Solving for frequency {} Hz with {} sources".format(f, smfs.nsrc))
 
@@ -271,98 +270,6 @@ if test_type == "compare_robin_rect":
             l2_comsol_mfs[indp, indf] = np.linalg.norm(sol - data_val) / np.linalg.norm(data_val)
             print("l2 error :", l2_comsol_mfs[indp, indf])
 
-elif test_type == "time":
-    sampling_freq = 8000
-    nfreq = 1000
-    gif = False
-    compute = False
-
-    if gif:
-        xx, yy = np.meshgrid(np.linspace(np.min(poly.vertices[:, 0])+0.01, np.max(poly.vertices[:, 0])-0.01, 100),
-                             np.linspace(np.min(poly.vertices[:, 0])+0.01, np.max(poly.vertices[:, 1])-0.01, 100))
-        concat = np.concatenate([xx.reshape(-1, 1), yy.reshape(-1, 1)], axis=1)
-        isin = poly.is_in(concat)
-        compute_pos = np.concatenate(concat[~isin, :])
-        solfreq = np.zeros([nfreq, len(compute_pos)], dtype=complex)
-
-    else:
-        compute_pos = np.reshape(pos_src + np.array([0, 0.5]), [1, 2])
-        solfreq = np.zeros(nfreq, dtype=complex)
-
-    t_arr, tmax = np.linalg.norm(compute_pos - pos_src) / c, nfreq / sampling_freq
-    tstart = time.time()
-    if compute:
-        smfs = HelmholtzMFS(nbound=1000, nsrc=400, pos_src=pos_src, k=0, poly=poly,
-                            dx=dx, cond="robin", beta=beta, src_nb="total", add_fun=20)
-
-        freqs = np.linspace(0, sampling_freq, nfreq)[1:]
-
-        for i, f in enumerate(freqs):
-            if f > 100:
-                smfs = HelmholtzMFS(nbound=1200, nsrc=4, pos_src=pos_src, k=f*2*np.pi/c, poly=poly,
-                                    dx=dx, cond="robin", beta=beta, src_nb="per_wavelength", add_fun=20)
-            else:
-                smfs = HelmholtzMFS(nbound=1200, nsrc=100, pos_src=pos_src, k=f * 2 * np.pi / c, poly=poly,
-                                    dx=dx, cond="robin", beta=beta, src_nb="total", add_fun=20)
-            print("Solving for frequency {} Hz".format(f))
-            smfs.k = 2 * np.pi * f / c
-            smfs.mfs_fit(solver='lstsq')
-            # smfs.plot_bound_values(nplot, show=True, plot3d=False)
-            if gif:
-                solfreq[i] = smfs.evaluate_sol(compute_pos)
-            else:
-                solfreq[i] = smfs.evaluate_sol(compute_pos)[0]
-
-
-        np.save("data/solfreqfullpoly.npy", solfreq)
-        print("Time taken : ", time.time() - tstart)
-    else:
-        if gif:
-            data = np.load("data/solfreqfull.npy")
-            data = np.fft.irfft(data, sampling_freq, axis=0)
-            print("Time taken for time conversion: ", time.time() - tstart)
-            data = np.reshape(data, [data.shape[0], 100, 100])
-            fig = plt.figure()
-            ax = plt.axes()
-            ax.set_xlim([0, lx])
-            ax.set_ylim([0, ly])
-            ax.set_xlabel("x")
-            ax.set_ylabel("y")
-            ax.set_title("Time evolution of the wave")
-            im = ax.imshow(np.abs(data[0]), cmap="jet", extent=[0, lx, 0, ly], animated=True)
-            fig.colorbar(im)
-            def animate(i):
-                print(i*4)
-                im.set_array(np.abs(data[i*4]))
-                return im,
-            anim = FuncAnimation(fig, animate, frames=data.shape[0], interval=20, blit=True, cache_frame_data=False, save_count=0)
-            anim.save('data/animation.gif', writer='imagemagick', fps=30)
-            plt.show()
-
-        else:
-
-            # create shoebox pra
-            sb = pra.ShoeBox([lx, ly], max_order=20, absorption=0.0)
-            sb.add_microphone_array(np.array([0,0]).reshape([2,1]))
-
-            sb.add_source(pos_src.reshape([2, 1]))
-            sb.compute_rir()
-            image_pos = sb.sources[0].get_images(max_order=20).T
-            # sort by distance to source
-            image_pos = image_pos[np.argsort(np.linalg.norm(image_pos[:, np.newaxis] - pos_src[np.newaxis:], axis=-1).squeeze())]
-            # keep only the first npo
-            image_pos = image_pos[0:251]
-            t_arr = np.linalg.norm(image_pos[:, :] - compute_pos[np.newaxis, :], axis=-1) / c
-
-
-            solfreq = np.load("data/solfreq.npy")
-            # pad with zeros at the end
-            time_sig = np.fft.irfft(solfreq)
-
-            plt.plot(np.linspace(0, tmax, len(time_sig)), time_sig, "r")
-            plt.vlines(t_arr, np.min(time_sig), np.max(time_sig), linestyles='dashed', linewidth=0.5, colors='k')
-            plt.show()
-
 if test_type == "distance":
     dx_val = np.array([0.1, 0.2, 0.5, 1., 1.5, 2., 3., 4., 5., 10.])
 
@@ -379,7 +286,7 @@ if test_type == "distance":
         for indb, nb in enumerate(nb_bound):
             print("dx = ", dx, "nb = ", nb)
             smfs = HelmholtzMFS(nbound=nb, nsrc=nb, pos_src=pos_src, k=k, poly=poly, dx=dx,
-                                cond=bound_cond, beta=beta, add_fun=10)
+                                cond=bound_cond, beta=[beta for _ in range(len(vertices))], add_fun=10)
             print("Solving for frequency {} Hz with {} sources".format(freq, nb))
             _, cond = smfs.mfs_fit(solver='lstsq')  # solve the system
             print("Done")
@@ -419,7 +326,7 @@ if test_type == "distance_polygon":
         for indb, nb in enumerate(nb_bound):
             print("dx = ", dx, "nb = ", nb)
             smfs = HelmholtzMFS(nbound=nb, nsrc=nb, pos_src=pos_src, k=k, poly=poly, dx=dx,
-                                cond=bound_cond, beta=beta, add_fun=20)
+                                cond=bound_cond, beta=[beta for _ in range(len(vertices))], add_fun=20)
             print("Solving for frequency {} Hz with {} sources".format(freq, nb))
             _, cond = smfs.mfs_fit(solver='lstsq')  # solve the system
 
@@ -448,7 +355,7 @@ elif test_type == "eigen_frequencies":
 
     det_vals = []
     smfs = HelmholtzMFS(nbound=250, nsrc=250, pos_src=pos_src, k=2 * np.pi * 100 / c, poly=poly, dx=dx,
-                        beta=beta, cond=bound_cond)
+                        beta=[beta for _ in range(len(vertices))], cond=bound_cond)
 
     if bound_cond in ["neumann", "dirichlet"]:
         freqs = np.linspace(min_freqr, max_freqr, nfreqr)
@@ -481,7 +388,8 @@ elif test_type == "mean_border_error":
     min_freq, max_freq, nfreq = 98, 101, 300
     freqs = np.linspace(min_freq, max_freq, nfreq)
     mean_border_error, sing = [], []
-    smfs = HelmholtzMFS(nbound=500, nsrc=500, pos_src=pos_src, k=0., poly=poly, dx=dx, beta=beta, cond=bound_cond)
+    smfs = HelmholtzMFS(nbound=500, nsrc=500, pos_src=pos_src, k=0., poly=poly, dx=dx,
+                        beta=[beta for _ in range(len(vertices))], cond=bound_cond)
 
     plot_nodes = []
     for j in range(poly.nedges):

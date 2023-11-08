@@ -3,15 +3,17 @@ from mfs import HelmholtzMFS
 from utils import Polygon, c, is_in
 import multiprocessing as mp
 import time
+from scipy import signal
 import matplotlib.pyplot as plt
 from functools import partial
 from matplotlib.animation import FuncAnimation
 import pickle
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 
 class Simulation:
     def __init__(self, vertices, fs, nfreq, boundsep, dx, pos_src,  cond='neumann', add_src=15, nsrc_schedule=None,
-                 min_dist=0.01, error_sep=None, error_thresh=0.05, sep_red=0.8, beta=0.):
+                 min_dist=0.01, error_sep=None, error_thresh=0.05, sep_red=0.8, beta=None):
         self.fs, self.dx = fs, dx
         self.poly = Polygon(vertices)
         self.freqs = np.linspace(0, fs, nfreq)
@@ -210,12 +212,16 @@ class Simulation:
 
         return res_tot, in_mask
 
-    def freq_to_time(self, freq_res, decay=None):
+    def freq_to_time(self, freq_res, decay=None, low_cut=None):
         """Convert the frequency response to the time impulse response"""
-
         if decay is not None:
             freq_res = freq_res * np.exp(-decay * self.freqs)
-        tval = np.linspace(0, self.nfreqs/self.fs, self.nfreqs, endpoint=False)
 
-        return tval, np.fft.irfft(freq_res, self.nfreqs, axis=1)
+        if low_cut is not None:
+            b, a = signal.butter(4, low_cut, 'high', analog=True)
+            _, filt = signal.freqs(b, a, worN=self.freqs)
+            freq_res *= filt[np.newaxis, :]
+        tval = np.linspace(0, self.nfreqs/self.fs, 2*self.nfreqs-2, endpoint=False)
+
+        return tval, np.fft.irfft(freq_res, 2*self.nfreqs-2, axis=1)
 

@@ -3,8 +3,6 @@ from scipy.special import hankel1, jv
 from sklearn.linear_model import Ridge
 from scipy.sparse.linalg import gmres
 from utils import Polygon, ExtrudedPolygon
-from scipy.integrate import simpson
-import time
 import matplotlib.pyplot as plt
 from mayavi import mlab
 
@@ -102,7 +100,28 @@ def dirichlet_operator(points, _, alpha, sourcesv, k, fund_wrap, individual_cont
 class HelmholtzMFS:
     def __init__(self, nbound, nsrc, pos_src: np.ndarray, poly: Polygon,
                  k: float, dx: float = None, cond='neumann', sample_kwargs=None, beta=None, src_nb='total',
-                 add_fun=0, get_parametrization=False, ampl=None):
+                 add_fun=0, get_parametrization=False, ampl=None, src_ampl=None):
+        """
+        Args:
+            nbound: parameter used to sample the boundary of the polygon (see sample_kwargs)
+            nsrc: parameter used to sample the virtual boundary where virtual sources are placed (see sample_kwargs)
+            pos_src: position of the impulsive sources (shape (nsrc, d))
+            poly: Polygon or ExtrudedPolygon instance
+            k: wavenumber
+            dx: separation between boundary and virtual boundary
+            cond: boundary condition, 'dirichlet', 'neumann' or 'robin'
+            sample_kwargs: dict of parameters used to sample the boundary and virtual boundary. If "no_resample" is
+                True, then nbound contains the sampled boundary points and normals as a tuple (points, normals, ids)
+            beta: list of impedance parameters used in the robin boundary condition. Should be a vector containing as
+                many elements as there are walls
+            src_nb: type of sampling TODO:only keep separation and per_wavelength
+            add_fun: additional particular solutions to add to the solution
+            get_parametrization: if True, return the parametrization of the boundary
+            ampl: preset amplitudes for the virtual sources/particular solutions (can be used with "no_resample" to
+            reuse the same virtual sources)
+            src_ampl: amplitudes of the impulsive sources (shape (pos_src.shape[0],))
+        """
+
         if isinstance(poly, ExtrudedPolygon):
             self.d, self.fund_wrap, self.fund_der_wrap = 3, fundamental_solution3d, fundamental_solution_derivative3d
         elif isinstance(poly, Polygon):
@@ -111,7 +130,11 @@ class HelmholtzMFS:
             raise ValueError("poly must be a Polygon or ExtrudedPolygon instance")
 
         self.dx = dx
-        self.pos_src = pos_src
+        self.pos_src = pos_src.reshape([-1, self.d])
+        if src_ampl is None:
+            self.src_ampl = np.ones(len(pos_src))
+        else:
+            self.src_ampl = src_ampl
         self.poly = poly
         self.k = k
         self.cond = cond
@@ -152,10 +175,13 @@ class HelmholtzMFS:
 
         self.nsrc = len(self.boundv)
 
-        if beta is None:
-            self.beta = np.zeros(self.nbound)
+        if beta is None:  # default null value for beta
+            self.beta = np.zeros(self.poly.nedges)
         else:
-            self.beta = beta*np.ones(self.nbound)
+            # if beta is given, it must be a vector of length nedges
+            assert len(beta) == self.poly.nedges + 2*(self.d - 2), "beta must be a vector of length nedges if d=2, " \
+                                                                      "nedges + 2 if d=3"
+            self.beta = np.asarray(beta)
 
         if ampl is not None:
             self.ampl = ampl
@@ -163,68 +189,6 @@ class HelmholtzMFS:
             self.ampl = np.zeros(self.nsrc, dtype=np.complex128)
 
         self.factor = np.pi / self.poly.angles[np.newaxis, :]  # angular factor for particular solution
-
-    def gram_fit(self, verbose=True, lam=None):
-        """Compute scalar products between fundamental solutions, use the boundary points as quadrature points"""
-        t1 = time.time()
-        # compute the value of the normal derivative of the fundamental solution at the observation points
-        if self.cond == 'neumann':
-            diffs = self.bound[:, np.newaxis, :] - self.boundv[np.newaxis, :, :]  # (npo, npv, 2)
-            norms = np.linalg.norm(diffs, axis=-1)  # (npo, npv)
-            vcontr = (np.sum(self.normvec[:, np.newaxis, :] * diffs, axis=-1) /  # (npo, npv)
-                      norms * fundamental_solution_derivative(norms, self.k))
-
-            # compute contribution of the source
-            diffs = self.bound[:, np.newaxis, :] - self.pos_src[np.newaxis, :, :]  # (npo, 2)
-            norms = np.linalg.norm(diffs, axis=-1)  # (npo, nsrc)
-            scontr = (np.sum(self.normvec[:, np.newaxis, :] * diffs, axis=-1) /  # (npo,)
-                      norms * fundamental_solution_derivative(norms, self.k)).squeeze()
-
-        elif self.cond == 'dirichlet':
-            vcontr = fundamental_solution(self.bound, self.boundv, self.k)
-            scontr = fundamental_solution(self.bound, self.pos_src.reshape([1, -1]), self.k).squeeze()
-        else:
-            raise ValueError("cond must be 'neumann' or 'dirichlet'")
-
-        nsrc = self.nsrc
-        A = np.zeros((nsrc, nsrc), dtype=np.complex128)
-        b = np.zeros((nsrc, 1), dtype=np.complex128)
-
-        for i in range(nsrc):
-            for j in range(i, nsrc):
-                # compute L2 scalar product between green functions
-                prod = vcontr[:, i].conj() * vcontr[:, j]  # (npo,)
-                # apply quadrature rule (simpson rule) over each edge
-                for t in range(self.poly.nedges):
-                    ind_edge = self.bound_ids == t
-                    A[i, j] += simpson(prod[ind_edge], self.params[ind_edge], axis=0)*self.poly.lengths[t]
-                A[j, i] = A[i, j].conj()
-            for t in range(self.poly.nedges):
-                ind_edge = self.bound_ids == t
-
-                b[i] += simpson(vcontr[ind_edge, i]*scontr[ind_edge].conj(),
-                                self.params[ind_edge], axis=0)*self.poly.lengths[t]
-
-        t2 = time.time()
-        if verbose:
-            print("Gram matrix computation took {:.3f} s".format(t2 - t1))
-
-        real_matrix = np.concatenate([np.concatenate([np.real(A), -np.imag(A)], axis=1),
-                                      np.concatenate([np.imag(A), np.real(A)], axis=1)], axis=0)
-
-        if lam is not None:
-            penal = lam*np.eye(2*self.nsrc)
-            real_matrix += penal
-        real_rhs = np.concatenate([-np.real(b), np.imag(b)])
-        cond = np.linalg.cond(real_matrix)
-        self.ampl = np.linalg.lstsq(real_matrix, real_rhs, rcond=-1)[0]
-        self.ampl = self.ampl[:self.nsrc] + 1j * self.ampl[self.nsrc:]
-
-        t3 = time.time()
-        if verbose:
-            print("Solving took {:.3f} s".format(t3 - t2))
-
-        return self.ampl, cond
 
     def mfs_fit(self, solver='lstsq', stat="cond"):
 
@@ -270,7 +234,7 @@ class HelmholtzMFS:
 
     def evaluate_sol(self, points):
         res = np.sum(self.fund_wrap(points, self.boundv, self.k) * self.ampl[:self.nsrc].reshape(1, -1), axis=1)
-        res += np.reshape(self.fund_wrap(points, self.pos_src, self.k), -1)
+        res += np.sum(self.fund_wrap(points, self.pos_src*self.src_ampl.reshape(1, -1), self.k), axis=1)
 
         if self.add_fun > 0:
             angles, diffs, norms = self.poly.compute_angles(points)
@@ -284,15 +248,14 @@ class HelmholtzMFS:
 
         return res
 
-    def boundary_operator(self, points, bound_ids, use_src=False, individual_contr=False, beta=None):
+    def boundary_operator(self, points, bound_ids, use_src=False, individual_contr=False):
         normals = self.poly.normals[bound_ids]
 
-        if beta is None:
-            beta = np.ones(len(points)) * self.beta[0]
+        beta = self.beta[bound_ids]
 
         if use_src:
-            pos = self.pos_src.reshape([1, -1])
-            alpha = np.ones(1)
+            pos = self.pos_src
+            alpha = self.src_ampl
         else:
             alpha = self.ampl
             pos = self.boundv

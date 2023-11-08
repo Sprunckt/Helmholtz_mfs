@@ -206,45 +206,6 @@ class Polygon:
 
         return res
 
-    def sample_rounded(self, npoints, radius, factor=1, one_per_corner=False):
-        """Sample on an enlarged version of the polygon (boundary translated by radius in the normal direction), with
-            rounded edges."""
-        # compute number of points for each edge and rounded corner
-        lengths = np.zeros(2 * len(self.vertices))
-        lengths[::2] = np.linalg.norm(self.vertices - np.roll(self.vertices, -1, axis=0), axis=1)
-        normals = np.roll(self.vertices, -1, axis=0) - self.vertices
-        normals = np.stack([normals[:, 1], -normals[:, 0]], axis=1)
-        normals /= np.linalg.norm(normals, axis=1)[:, np.newaxis]
-
-        if one_per_corner:
-            lengths[1::2] = 1
-            lengths[::2] = np.round(lengths[::2]/np.sum(lengths[::2]) * (npoints-self.nedges))
-            lengths = np.round(lengths).astype(int)
-        else:
-            # add rounded corners, ponderate each corner by angle
-            angles = np.arccos(np.sum(normals * np.roll(normals, -1, axis=0), axis=1))
-            lengths[1::2] = np.roll(angles, 1) * radius * factor
-            lengths /= np.sum(lengths)
-            lengths = np.round(lengths * npoints).astype(int)
-
-        lengths[-1] += npoints - np.sum(lengths)
-
-        boundary = np.zeros((npoints, 2))
-        indstart = 0
-        for i in range(len(lengths)):
-            le = lengths[i]
-            v1, v2 = self.vertices[i // 2], self.vertices[(i // 2 + 1) % len(self.vertices)]
-            if i % 2 == 0:
-                edge = v2 - v1
-                boundary[indstart:indstart + le, :] = v1 + normals[i // 2] * radius + edge * np.linspace(0, 1, le)[
-                                                                                             :, np.newaxis]
-            else:
-                vect1, vect2 = normals[i // 2 - 1], normals[i // 2]
-                boundary[indstart:indstart + le, :] = sample_points_on_circle(v1, radius, vect1, vect2, le + 2)[1:-1, :]
-            indstart += le
-
-        return boundary
-
     def get_normal(self, edge_id):
         return self.normals[edge_id]
 
@@ -253,20 +214,6 @@ class Polygon:
         corresponding coordinates in 2D"""
         v1, v2 = self.vertices[edge_id], self.vertices[(edge_id + 1) % self.nedges]
         return v1 + param[:, np.newaxis] * (v2 - v1)
-
-    def get_image_source(self, pos):
-        """Return the image source corresponding to the positions pos (shape (npoints, 2)) with respect to each edge of
-        the polygon. Return an array of shape (npoints*nedges, 2)."""
-        res = np.zeros((pos.shape[0] * self.nedges, 2))
-        for i in range(self.nedges):
-            # compute distance from each pos to each edge of the polygon
-            v1, v2 = self.vertices[i], self.vertices[(i + 1) % self.nedges]
-            vect = v2 - v1
-            dist = np.sum((pos - v1) * vect, axis=1)
-            proj = v1 + dist[:, np.newaxis] * vect / np.sum(vect ** 2)
-            # compute image source
-            res[i * pos.shape[0]:(i + 1) * pos.shape[0], :] = proj + np.linalg.norm(proj - pos, axis=1)[:, np.newaxis] * self.normals[i]
-        return res
 
     def compute_angles(self, points):
         """Compute polar angles of points with respect to the vertices of the polygon, using the next edge (in
@@ -282,6 +229,8 @@ class Polygon:
     def sample_inside(self, sep):
         points, triang = gmsh_sampling(self.vertices[:self.nedges, :], mesh_size=sep)
         return points[:, :2], triang
+
+
 class Ellipse:
     def __init__(self, radiusx, radiusy, center=None):
         self.radiusx = radiusx

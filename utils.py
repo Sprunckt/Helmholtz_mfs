@@ -30,66 +30,6 @@ def chebyshev_nodes(a, b, N):
     return 0.5*(a + b) + 0.5*(b - a)*np.cos(np.pi*(2*np.arange(N)[::-1] + 1) / (2*N))
 
 
-def sample_points_on_circle(center, radius, start_vec, end_vec, num_points):
-    # Compute the start and end angles of the circular arc
-    start_vec = start_vec / np.linalg.norm(start_vec)
-    end_vec = end_vec / np.linalg.norm(end_vec)
-
-    start_angle = np.arctan2(start_vec[1], start_vec[0]) % (2*np.pi)
-    end_angle = np.arctan2(end_vec[1], end_vec[0])% (2*np.pi)
-    if end_angle < start_angle:
-        end_angle += 2*np.pi
-
-    angles = np.linspace(start_angle, end_angle, num_points)
-
-    points = center + radius*np.stack([np.cos(angles), np.sin(angles)], axis=1)
-    return points
-
-
-def sample_cuboid_chebyshev(npoints, lx, ly, lz):
-    """Compute the boundary and outside normal vectors of a cuboid using Chebyshev nodes to sample the faces, weight
-    by face surface."""
-    ax, ay, az = ly*lz, lx*lz, lx*ly
-    npfx = int(np.rint(ax / (ax + ay + az) * npoints)) // 2  # number of points for each x face
-    npfy = int(np.rint(ay / (ax + ay + az) * npoints)) // 2
-    npfz = int(np.rint(az / (ax + ay + az) * npoints)) // 2
-    print('npoints per face: ', npfx, npfy, npfz)
-    yx = chebyshev_nodes(0, ly, int(np.sqrt(npfx * ly / lz)))
-    zx = chebyshev_nodes(0, lz, int(npfx/len(yx)))
-
-    points = np.meshgrid(yx, zx, indexing='ij')
-    points = np.stack([np.zeros_like(points[0]), points[0], points[1]], axis=2).reshape((-1, 3))
-    n = len(points)
-    normals = np.stack([-np.ones(n), np.zeros(n), np.zeros(n)], axis=1)
-
-    points = np.concatenate([points, points + np.array([lx, 0, 0])], axis=0)
-    normals = np.concatenate([normals, -normals], axis=0)
-
-    xy = chebyshev_nodes(0, lx, int(np.sqrt(npfy * lx/lz)))
-    zy = chebyshev_nodes(0, lz, int(npfy / len(xy)))
-
-    pointsy = np.meshgrid(xy, zy, indexing='ij')
-    pointsy = np.stack([pointsy[0], np.zeros_like(pointsy[0]), pointsy[1]], axis=2).reshape((-1, 3))
-    n = len(pointsy)
-    normalsy = np.stack([np.zeros(n), -np.ones(n), np.zeros(n)], axis=1)
-
-    points = np.concatenate([points, pointsy, pointsy + np.array([0, ly, 0])], axis=0)
-    normals = np.concatenate([normals, normalsy, -normalsy], axis=0)
-
-    xz = chebyshev_nodes(0, lx, int(np.sqrt(npfz * lx / ly)))
-    yz = chebyshev_nodes(0, ly, int(npfz/len(xz)))
-
-    pointsz = np.meshgrid(xz, yz, indexing='ij')
-    pointsz = np.stack([pointsz[0], pointsz[1], np.zeros_like(pointsz[0])], axis=2).reshape((-1, 3))
-    n = len(pointsz)
-    normalsz = np.stack([np.zeros(n), np.zeros(n), -np.ones(n)], axis=1)
-
-    points = np.concatenate([points, pointsz, pointsz + np.array([0, 0, lz])], axis=0)
-    normals = np.concatenate([normals, normalsz, -normalsz], axis=0)
-
-    return points, normals / np.linalg.norm(normals, axis=1)[:, np.newaxis]
-
-
 def out_polygon(points, vertices, min_dist=0.0):
     """Check if points (shape (npoints, d)) are outside and at a distance superior to min_dist of a (not necessarily
     convex) polygon given by its vertices (shape (nvertices, d)) in counter-clockwise order, or by a Polygon object.
@@ -263,21 +203,22 @@ class ExtrudedPolygon(Polygon):
 
     def sample(self, separation, distribution='uniform', min_dist=0.01, sample_type="separation",
                return_nodes=False, return_triangulation=False):  # return_nodes is for compatibility with Polygon
-        if distribution != 'uniform':
+        if distribution != 'uniform':  # kept for compatibility with Polygon
             raise NotImplementedError("Only uniform distribution is implemented for extruded polygons.")
-
+        if sample_type != 'separation':
+            raise NotImplementedError("Only separation sampling is implemented for extruded polygons.")
         renormed_edges = self.edges / np.linalg.norm(self.edges, axis=1)[:, np.newaxis]
 
-        boundary, bound_ids, normals, triangulations  = [], [], [], []
+        boundary, bound_ids, normals, triangulations = [], [], [], []
         e3 = np.array([0, 0, 1], dtype=float)*(self.height - min_dist)
         for i in range(self.nedges):  # vertical faces
             points, triang = gmsh_sampling(np.stack([self.vertices[i] +
                                                      np.array([renormed_edges[i, 0]*min_dist,
                                                                renormed_edges[i, 1]*min_dist, min_dist]),
-                                                     self.vertices[(i+1)%self.nedges] +
+                                                     self.vertices[(i+1) % self.nedges] +
                                                      np.array([-renormed_edges[i, 0]*min_dist,
                                                                -renormed_edges[i, 1]*min_dist, min_dist]),
-                                                     self.vertices[(i+1)%self.nedges] + e3, self.vertices[i] + e3],
+                                                     self.vertices[(i+1) % self.nedges] + e3, self.vertices[i] + e3],
                                                     axis=0),
                                            mesh_size=separation)
 
@@ -288,7 +229,7 @@ class ExtrudedPolygon(Polygon):
         # sample bottom and top : mesh the inside of a smaller polygon
         inside_poly = self.shift(-min_dist)
         points, triang = inside_poly.sample_inside(separation)
-        boundary.append(np.concatenate([points, np.zeros([points.shape[0], 1])], axis=1) ) # bottom
+        boundary.append(np.concatenate([points, np.zeros([points.shape[0], 1])], axis=1))  # bottom
         boundary.append(boundary[-1].copy())  # top
         boundary[-1][:, 2] = self.height
 

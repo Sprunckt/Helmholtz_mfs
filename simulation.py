@@ -1,5 +1,5 @@
 import numpy as np
-from mfs import HelmholtzMFS
+from mfs import HelmholtzMFS, SampledBoundary
 from utils import Polygon, c, is_in
 import multiprocessing as mp
 import time
@@ -21,7 +21,7 @@ class Simulation:
         self.nfreqs = len(self.freqs)
 
         # ampl will contain the amplitudes for each source at each freq, vpos the boundary positions at each mark
-        self.ampl, self.vpos, self.normals = [None for _ in range(self.nfreqs)], [], []
+        self.ampl, self.vpos = [None for _ in range(self.nfreqs)], []
 
         self.simulated = np.zeros(nfreq, dtype=bool)
         self.simulated[0] = True
@@ -52,8 +52,9 @@ class Simulation:
             if nsrc_schedule["method"] == "per_wavelength":
                 nsrc_schedule["sep"][i] = c / self.freqs[nsrc_schedule["sample_marks"][i]] / \
                                            (nsrc_schedule["nsrc"][i] - 1)
-            boundv, normvecv, _ = self.poly.sample(nsrc_schedule["sep"][i], sample_type="separation", min_dist=0.)
-            self.vpos.append(boundv + normvecv*self.dx)
+            vbound = SampledBoundary(self.poly, nsrc_schedule["sep"][i],
+                                     min_dist=0., sample_type="separation", dx=self.dx)
+            self.vpos.append(vbound)
 
         # for each frequency, assign the index of the corresponding reference frequency mark
         self.freq_ref = np.zeros(nfreq, dtype=int)
@@ -73,11 +74,10 @@ class Simulation:
             print("insufficient boundary separation to account for all frequencies, clipping")
 
         # sample boundary using boundsep
-        bound, normvec, bound_ids = self.poly.sample(boundsep, sample_type="separation", min_dist=min_dist)
+        self.room_bound = SampledBoundary(self.poly, boundsep, min_dist=min_dist, sample_type="separation")
 
-        self.mfs = HelmholtzMFS(nbound=[bound, normvec, bound_ids], nsrc=[self.vpos[0], None], pos_src=pos_src,
-                                poly=self.poly, k=self.freqs[0], cond=cond, add_fun=add_src, beta=beta,
-                                sample_kwargs=dict(no_resample=True))
+        self.mfs = HelmholtzMFS(room_bound=self.room_bound, virtual_bound=self.vpos[0], pos_src=pos_src,
+                                poly=self.poly, cond=cond, add_fun=add_src, beta=beta)
 
         print("Number of boundary points: ", self.mfs.nbound)
 
@@ -91,7 +91,7 @@ class Simulation:
         error_points, _, error_ids = self.poly.sample(error_sep, sample_type="separation", min_dist=min_dist)
         print("Number of error points: ", len(error_points))
         for i, indfreq in enumerate(nsrc_schedule["sample_marks"]):
-            self.mfs.k = 2 * np.pi * self.freqs[indfreq] / c  # update wave number
+            k = 2 * np.pi * self.freqs[indfreq] / c  # update wave number
             # simulate at each mark frequency, increase number of sources until error is below threshold
             rel_error, max_tries = np.inf, 10
 
@@ -102,27 +102,28 @@ class Simulation:
             t1 = time.time()
             while rel_error > error_thresh and max_tries > 0:
                 max_tries -= 1
-                self.mfs.update_sources(self.vpos[i], None)  # update source positions
-                self.mfs.mfs_fit(solver="lstsq")
+                self.mfs.update_sources(self.vpos[i])  # update source positions
+                self.mfs.mfs_fit(k=k, solver="lstsq")
 
                 # check error
-                mfs_val = self.mfs.boundary_operator(error_points, error_ids)
-                src_val = -self.mfs.boundary_operator(error_points, error_ids, use_src=True)
-                rel_error = np.sqrt(np.sum((np.abs(mfs_val- src_val)) ** 2)) / np.linalg.norm(src_val)
+                mfs_val = self.mfs.boundary_operator(error_points, error_ids, k)
+                src_val = -self.mfs.boundary_operator(error_points, error_ids, k, use_src=True)
+                rel_error = np.sqrt(np.sum((np.abs(mfs_val - src_val)) ** 2)) / np.linalg.norm(src_val)
                 if rel_error > error_thresh:  # resample with more sources
                     nsrc_schedule["sep"][i] = nsrc_schedule["sep"][i] * sep_red
 
-                    self.vpos[i], normvecv, _ = self.poly.sample(nsrc_schedule["sep"][i],
-                                                                 sample_type="separation", min_dist=min_dist)
-                    self.vpos[i] += normvecv * self.dx
+                    self.vpos[i] = SampledBoundary(self.poly, nsrc_schedule["sep"][i],
+                                                   min_dist=0., sample_type="separation", dx=self.dx)
+
                     print("error {} above threshold, retrying "
                           "with separation {}, {} sources".format(rel_error, nsrc_schedule["sep"][i],
                                                                   len(self.vpos[i])))
 
                     if nsrc_schedule["sep"][i] < boundsep:
                         print("error above threshold, clipping boundary separation to minimal source separation")
-                        self.mfs.update_boundary(*self.poly.sample(boundsep, sample_type="separation",
-                                                                   min_dist=min_dist))
+                        self.mfs.update_boundary(SampledBoundary(self.poly, nsrc_schedule["sep"][i], min_dist=min_dist,
+                                                                 sample_type="separation", dx=self.dx))
+
             if max_tries == 0:
                 print("error threshold not reached, simulation might be inaccurate")
             self.ampl[indfreq] = self.mfs.ampl.copy()
@@ -136,11 +137,10 @@ class Simulation:
     def simulate_freq(self, ind):
         t1 = time.time()
 
-        mfs_tmp = HelmholtzMFS(nbound=[self.mfs.bound, self.mfs.normvec, self.mfs.bound_ids],
-                               nsrc=[self.vpos[self.freq_ref[ind]], None], pos_src=self.mfs.pos_src, poly=self.poly,
-                               k=self.wave_numbers[ind], cond=self.mfs.cond, beta=self.mfs.beta,
-                               sample_kwargs=dict(no_resample=True), add_fun=self.mfs.add_fun)
-        mfs_tmp.mfs_fit(solver="lstsq")
+        mfs_tmp = HelmholtzMFS(room_bound=self.mfs.room_bound, virtual_bound=self.vpos[self.freq_ref[ind]],
+                               pos_src=self.mfs.pos_src, poly=self.poly,
+                               cond=self.mfs.cond, beta=self.mfs.beta, add_fun=self.mfs.add_fun)
+        mfs_tmp.mfs_fit(k=self.wave_numbers[ind], solver="lstsq")
         t2 = time.time()
         print("simulating frequency {}; time {} s; {} sources".format(self.freqs[ind], t2-t1, mfs_tmp.nsrc))
         return mfs_tmp.ampl
@@ -148,12 +148,12 @@ class Simulation:
     def compute_freq(self, compute_points, ind):
         """Compute the solution at the given points (shape (npoints, d)) at the given frequency"""
         t1 = time.time()
-        mfs_tmp = HelmholtzMFS(nbound=[self.mfs.bound, self.mfs.normvec, self.mfs.bound_ids],
-                               nsrc=[self.vpos[self.freq_ref[ind]], None], pos_src=self.mfs.pos_src, poly=self.poly,
-                               k=self.wave_numbers[ind], cond=self.mfs.cond, beta=self.mfs.beta, ampl=self.ampl[ind],
-                               sample_kwargs=dict(no_resample=True), add_fun=self.mfs.add_fun)
+        mfs_tmp = HelmholtzMFS(room_bound=self.mfs.room_bound, virtual_bound=self.vpos[self.freq_ref[ind]],
+                               pos_src=self.mfs.pos_src, poly=self.poly, cond=self.mfs.cond,
+                               beta=self.mfs.beta, ampl=self.ampl[ind],
+                               add_fun=self.mfs.add_fun)
         print("computing frequency {}; {} sources".format(self.freqs[ind], mfs_tmp.nsrc))
-        res = mfs_tmp.evaluate_sol(compute_points)
+        res = mfs_tmp.evaluate_sol(compute_points, self.wave_numbers[ind])
         t2 = time.time()
         print("time {} s".format(t2 - t1))
 

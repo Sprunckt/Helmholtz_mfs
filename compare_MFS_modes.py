@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as colors
 from utils import plot_boundary, Polygon, c
-from mfs import HelmholtzMFS
+from mfs import HelmholtzMFS, SampledBoundary
 
 import pyroomacoustics as pra
 std_off = pra.constants.get("frac_delay_length") // 2
@@ -14,7 +14,7 @@ dx = 0.2
 plot_sol = False
 plot_bound = False
 plot_bound_cond = True
-test_type = "comsol_polygon"
+test_type = "convergence"
 bound_cond = "neumann"
 beta = 0.006378610727567917+0.009574047932848483j
 
@@ -49,19 +49,21 @@ if test_type == "convergence":  # test convergence against analytical eigenmodes
         exact_sol = exact_sol.flatten()
 
         for itp, npo in enumerate(nb_bound):
-
+            room_bound = SampledBoundary(poly, npo, distribution=distribution, min_dist=0.01, sample_type='total')
+            virtual_bound = SampledBoundary(poly, npo, dx=dx,
+                                            distribution=distribution, min_dist=0.00, sample_type='total')
             print("fitting for frequency {} Hz with {} sources".format(fs, npo))
-            smfs = HelmholtzMFS(nbound=npo, nsrc=npo, pos_src=pos_src, k=k, poly=poly, dx=dx,
+            smfs = HelmholtzMFS(room_bound=room_bound, virtual_bound=virtual_bound, pos_src=pos_src, poly=poly,
                                 cond=bound_cond, beta=[beta for _ in range(len(vertices))], add_fun=0)
 
             if plot_bound:  # plot boundary
-                plot_boundary(smfs.bound, smfs.normvec, smfs.boundv, pos_src)
+                plot_boundary(smfs.room_bound.bound, smfs.room_bound.normvec, smfs.virtual_bound.bound, pos_src)
 
-            alpha, conditions[itf, itp] = smfs.mfs_fit(stat='cond')
+            alpha, conditions[itf, itp] = smfs.mfs_fit(k=k, stat='cond')
             print("min and max values : ", np.min(alpha), np.max(alpha))
 
             print("Computing solution".format(fs, npo))
-            sol = smfs.evaluate_sol(points)
+            sol = smfs.evaluate_sol(points, k=k)
             print("Done")
 
             print("imaginary part norm: {}".format(np.linalg.norm(np.imag(sol))))
@@ -83,7 +85,7 @@ if test_type == "convergence":  # test convergence against analytical eigenmodes
                 plt.show()
 
             if plot_bound_cond:
-                smfs.plot_bound_values(nplot=nplot, show=True, plot3d=True)
+                smfs.plot_bound_values(k=k, nplot=nplot, show=True, plot3d=True)
     # do a linear regression on the log-log plot
     log_nb_bound = np.log(nb_bound)
     log_l2_error, log_l2_rel_error = np.log(conditions), np.log(l2_rel_error)
@@ -122,16 +124,19 @@ elif test_type == "comsol_polygon":
         k = 2 * np.pi * f / c
 
         for indp, npo in enumerate(npoints):
-            smfs = HelmholtzMFS(nbound=np.maximum(1000, npo), nsrc=npo, pos_src=pos_src, k=k, poly=poly,
-                                dx=dx, cond=bound_cond, beta=[beta for _ in range(len(vertices))], src_nb="total", add_fun=5)
+            room_bound = SampledBoundary(poly, npo, distribution=distribution, min_dist=0.01, sample_type='total')
+            virtual_bound = SampledBoundary(poly, npo, dx=dx,
+                                            distribution=distribution, min_dist=0.00, sample_type='total')
+            smfs = HelmholtzMFS(room_bound=room_bound, virtual_bound=virtual_bound, pos_src=pos_src, poly=poly,
+                                cond=bound_cond, beta=[beta for _ in range(len(vertices))], add_fun=5)
 
             print("Solving for frequency {} Hz with {} sources".format(f, smfs.nsrc))
 
             # smfs.boundv = pos
             if plot_bound:  # plot boundary
-                plot_boundary(smfs.bound, smfs.normvec, smfs.boundv, smfs.pos_src)
-            alpha, conditions[indp, indf] = smfs.mfs_fit(solver='lstsq')  # solve the system
-            sol = smfs.evaluate_sol(points)
+                plot_boundary(smfs.room_bound.bound, smfs.room_bound.normvec, smfs.virtual_bound.bound, pos_src)
+            alpha, conditions[indp, indf] = smfs.mfs_fit(k=k, solver='lstsq')  # solve the system
+            sol = smfs.evaluate_sol(points, k=k)
             print("Done")
             print("min and max values : r part {},{} ; i part {},{} ".format(np.min(alpha.real), np.max(alpha.real),
                                                                              np.min(alpha.imag), np.max(alpha.imag)))
@@ -150,7 +155,7 @@ elif test_type == "comsol_polygon":
 
                 plt.show()
             if plot_bound_cond:
-                smfs.plot_bound_values(nplot, show=True, plot3d=True)
+                smfs.plot_bound_values(nplot, k=k, show=True, plot3d=True)
 
             l2_comsol_mfs[indp, indf] = np.linalg.norm(sol - data_val) / np.linalg.norm(data_val)
             print("l2 error :", l2_comsol_mfs[indp, indf])
@@ -191,16 +196,19 @@ elif test_type == "comsol_modes":
         l2_comsol_analytical[indf] = np.linalg.norm(exact_sol - data_val) / np.linalg.norm(exact_sol)
         print("l2 error fem-analytical :", l2_comsol_analytical[indf])
         for indp, npo in enumerate(npoints):
-            smfs = HelmholtzMFS(nbound=npo, nsrc=npo, pos_src=pos_src, k=k, poly=poly, dx=dx,
-                                cond=bound_cond, beta=[beta for _ in range(len(vertices))], add_fun=0)
+            room_bound = SampledBoundary(poly, npo, distribution=distribution, min_dist=0.01, sample_type='total')
+            virtual_bound = SampledBoundary(poly, npo, dx=dx,
+                                            distribution=distribution, min_dist=0.00, sample_type='total')
+            smfs = HelmholtzMFS(room_bound=room_bound, virtual_bound=virtual_bound, pos_src=pos_src, poly=poly,
+                                cond=bound_cond, beta=[beta for _ in range(len(vertices))], add_fun=5)
 
             # plot boundary
             if plot_bound:
-                plot_boundary(smfs.bound, smfs.normvec, smfs.boundv, pos_src)
+                plot_boundary(smfs.room_bound.bound, smfs.room_bound.normvec, smfs.virtual_bound.bound, pos_src)
 
-            _, cond = smfs.mfs_fit(solver='lstsq')  # solve the system
+            _, cond = smfs.mfs_fit(k=k, solver='lstsq')  # solve the system
             print("Solving for frequency {} Hz with {} sources".format(f, npo))
-            sol = smfs.evaluate_sol(points)
+            sol = smfs.evaluate_sol(points, k=k)
             print("Done")
 
             if plot_sol:
@@ -226,7 +234,7 @@ elif test_type == "comsol_modes":
         plt.hlines(l2_comsol_analytical[i], npoints[0], npoints[-1], linestyles='dotted', colors=c)
         # darkening the color
         c = [0.75 * x for x in colors.to_rgba(c)[:3]] + [1, ]
-        line, = plt.loglog(npoints, l2_mfs_analytical[:, i], marker="1", color=c, linestyle="dashed")
+        _, = plt.loglog(npoints, l2_mfs_analytical[:, i], marker="1", color=c, linestyle="dashed")
 
     plt.legend()
     plt.show()
@@ -250,22 +258,25 @@ if test_type == "compare_robin_rect":
         k = 2 * np.pi * f / c
 
         for indp, npo in enumerate(npoints):
-            smfs = HelmholtzMFS(nbound=np.maximum(2000, npo), nsrc=npo, pos_src=pos_src, k=k, poly=poly,
-                                dx=dx, cond="robin", beta=[beta for _ in range(len(vertices))],
-                                src_nb="total", add_fun=0)
+            room_bound = SampledBoundary(poly, np.maximum(2000, npo), distribution=distribution,
+                                         min_dist=0.01, sample_type='total')
+            virtual_bound = SampledBoundary(poly, npo, dx=dx,
+                                            distribution=distribution, min_dist=0.00, sample_type='total')
+            smfs = HelmholtzMFS(room_bound=room_bound, virtual_bound=virtual_bound, pos_src=pos_src, poly=poly,
+                                cond=bound_cond, beta=[beta for _ in range(len(vertices))], add_fun=5)
 
             print("Solving for frequency {} Hz with {} sources".format(f, smfs.nsrc))
 
             # smfs.boundv = pos
             if plot_bound:  # plot boundary
-                plot_boundary(smfs.bound, smfs.normvec, smfs.boundv, smfs.pos_src)
-            alpha, conditions[indp, indf] = smfs.mfs_fit(solver='lstsq')  # solve the system
-            sol = smfs.evaluate_sol(points)
+                plot_boundary(smfs.room_bound.bound, smfs.room_bound.normvec, smfs.virtual_bound.bound, pos_src)
+            alpha, conditions[indp, indf] = smfs.mfs_fit(k=k, solver='lstsq')  # solve the system
+            sol = smfs.evaluate_sol(points, k=k)
             print("Done")
             print("min and max values : r part {},{} ; i part {},{} ".format(np.min(alpha.real), np.max(alpha.real),
                                                                              np.min(alpha.imag), np.max(alpha.imag)))
             if plot_bound_cond:
-                smfs.plot_bound_values(nplot, show=True, plot3d=False)
+                smfs.plot_bound_values(nplot, k=k, show=True, plot3d=False)
 
             l2_comsol_mfs[indp, indf] = np.linalg.norm(sol - data_val) / np.linalg.norm(data_val)
             print("l2 error :", l2_comsol_mfs[indp, indf])
@@ -285,12 +296,17 @@ if test_type == "distance":
     for ind, dx in enumerate(dx_val):
         for indb, nb in enumerate(nb_bound):
             print("dx = ", dx, "nb = ", nb)
-            smfs = HelmholtzMFS(nbound=nb, nsrc=nb, pos_src=pos_src, k=k, poly=poly, dx=dx,
+            room_bound = SampledBoundary(poly, nb, distribution=distribution,
+                                         min_dist=0.01, sample_type='total')
+            virtual_bound = SampledBoundary(poly, nb, dx=dx,
+                                            distribution=distribution, min_dist=0.00, sample_type='total')
+            smfs = HelmholtzMFS(room_bound=room_bound, virtual_bound=virtual_bound, pos_src=pos_src, poly=poly,
                                 cond=bound_cond, beta=[beta for _ in range(len(vertices))], add_fun=10)
+
             print("Solving for frequency {} Hz with {} sources".format(freq, nb))
-            _, cond = smfs.mfs_fit(solver='lstsq')  # solve the system
+            _, cond = smfs.mfs_fit(k=k, solver='lstsq')  # solve the system
             print("Done")
-            sol = smfs.evaluate_sol(points)
+            sol = smfs.evaluate_sol(points, k=k)
 
             # compute the relative error
             l2_rel_error[ind, indb] = np.linalg.norm(np.real(sol) - exact_sol) / np.linalg.norm(exact_sol)
@@ -325,13 +341,18 @@ if test_type == "distance_polygon":
     for ind, dx in enumerate(dx_val):
         for indb, nb in enumerate(nb_bound):
             print("dx = ", dx, "nb = ", nb)
-            smfs = HelmholtzMFS(nbound=nb, nsrc=nb, pos_src=pos_src, k=k, poly=poly, dx=dx,
-                                cond=bound_cond, beta=[beta for _ in range(len(vertices))], add_fun=20)
+
+            room_bound = SampledBoundary(poly, nb, distribution=distribution,
+                                         min_dist=0.01, sample_type='total')
+            virtual_bound = SampledBoundary(poly, nb, dx=dx,
+                                            distribution=distribution, min_dist=0.00, sample_type='total')
+            smfs = HelmholtzMFS(room_bound=room_bound, virtual_bound=virtual_bound, pos_src=pos_src, poly=poly,
+                                cond=bound_cond, beta=[beta for _ in range(len(vertices))], add_fun=10)
             print("Solving for frequency {} Hz with {} sources".format(freq, nb))
-            _, cond = smfs.mfs_fit(solver='lstsq')  # solve the system
+            _, cond = smfs.mfs_fit(k=k, solver='lstsq')  # solve the system
 
             print("Solving for frequency {} Hz with {} sources".format(freq, nb))
-            sol = smfs.evaluate_sol(points)
+            sol = smfs.evaluate_sol(points, k=k)
             print("Done")
 
             l2_rel_error[ind, indb] = np.linalg.norm(np.real(sol) - fem_data) / np.linalg.norm(fem_data)
@@ -353,9 +374,14 @@ elif test_type == "eigen_frequencies":
     min_freqr, max_freqr, nfreqr = 99.75, 100, 300
     min_freqi, max_freqi, nfreqi = 0, 10, 25
 
+    k = 2 * np.pi * 100 / c
     det_vals = []
-    smfs = HelmholtzMFS(nbound=250, nsrc=250, pos_src=pos_src, k=2 * np.pi * 100 / c, poly=poly, dx=dx,
-                        beta=[beta for _ in range(len(vertices))], cond=bound_cond)
+    room_bound = SampledBoundary(poly, 200, distribution=distribution,
+                                 min_dist=0.01, sample_type='total')
+    virtual_bound = SampledBoundary(poly, 200, dx=dx,
+                                    distribution=distribution, min_dist=0.00, sample_type='total')
+    smfs = HelmholtzMFS(room_bound=room_bound, virtual_bound=virtual_bound, pos_src=pos_src, poly=poly,
+                        cond=bound_cond, beta=[beta for _ in range(len(vertices))], add_fun=0)
 
     if bound_cond in ["neumann", "dirichlet"]:
         freqs = np.linspace(min_freqr, max_freqr, nfreqr)
@@ -363,7 +389,7 @@ elif test_type == "eigen_frequencies":
         for indf, f in enumerate(freqs):
             print("frequency : ", f)
             smfs.k = 2 * np.pi * f / c
-            _, det = smfs.mfs_fit(stat='sing')
+            _, det = smfs.mfs_fit(k=k, stat='sing')
             print("max ampl:{}, det: {}".format(np.max(np.abs(smfs.ampl)), np.abs(det)))
             det_vals.append(np.log(det))
 
@@ -376,51 +402,10 @@ elif test_type == "eigen_frequencies":
         freqs = np.concatenate([freqsx.reshape(-1, 1), freqsy.reshape(-1, 1)], axis=1)
         for indf in range(nfreq):
             smfs.k = 2 * np.pi * (freqs[indf, 0] + 1j*freqs[indf, 1]) / c
-            _, det = smfs.mfs_fit(stat='sing')
+            _, det = smfs.mfs_fit(k=k, stat='sing')
             print("max ampl:{}, det: {}".format(np.max(np.abs(smfs.ampl)), np.abs(det)))
             det_vals[indf] = np.log(det)
         det_vals = np.reshape(det_vals, freqsx.shape)
         plt.imshow(det_vals, extent=[min_freqr, max_freqr, min_freqi, max_freqi], origin='lower', aspect='auto')
         plt.colorbar()
-    plt.show()
-
-elif test_type == "mean_border_error":
-    min_freq, max_freq, nfreq = 98, 101, 300
-    freqs = np.linspace(min_freq, max_freq, nfreq)
-    mean_border_error, sing = [], []
-    smfs = HelmholtzMFS(nbound=500, nsrc=500, pos_src=pos_src, k=0., poly=poly, dx=dx,
-                        beta=[beta for _ in range(len(vertices))], cond=bound_cond)
-
-    plot_nodes = []
-    for j in range(poly.nedges):
-        plot_nodes.append(poly.sample_edge(nplot, j, distribution="uniform"))
-
-    for indf, f in enumerate(freqs):
-        smfs.k = 2 * np.pi * f / c
-        alpha, s = smfs.mfs_fit(stat="sing")
-        sing.append(np.abs(s))
-
-        src_norm = 0.
-        error_norm = 0.
-        mfs_val, src_val = [], []
-        for j in range(poly.nedges):
-            edge_step = np.linalg.norm(plot_nodes[j][1] - plot_nodes[j][0])
-            mfs_val.append(smfs.boundary_operator(plot_nodes[j], np.repeat(j, nplot)))
-
-            src_val.append(-smfs.boundary_operator(plot_nodes[j], np.repeat(j, nplot), use_src=True))
-
-            src_norm += np.sum(np.real(src_val[-1])**2) * edge_step
-            error_norm += np.sum(np.real(mfs_val[-1] - src_val[-1])**2) * edge_step
-        mfs_val = np.concatenate(mfs_val, axis=0)
-
-        mean_border_error.append(np.sqrt(error_norm / src_norm))
-        print("frequency: ", f, " error:", mean_border_error[-1])
-
-    nfreq_eig = 300
-    freqs_eig = np.linspace(min_freq, max_freq, nfreq_eig)
-
-    plt.plot(freqs, mean_border_error)
-    # plot on same plot with different scale
-    ax2 = plt.gca().twinx()
-    ax2.plot(freqs_eig, sing, color="red")
     plt.show()

@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from shapely.geometry import Polygon as ShapelyPolygon
 from shapely.geometry import Point as ShapelyPoint
 import pygmsh
+
 c = 343
 
 
@@ -57,13 +58,67 @@ def plot_boundary(bound, norm_vec, boundv, pos_src):
 
 
 class Polygon:
-    def __init__(self, vertices):
-        self.vertices = vertices
-        edges = np.roll(vertices, -1, axis=0) - vertices
-        self.normals = np.stack([edges[:, 1], -edges[:, 0]], axis=1)
-        self.normals /= np.linalg.norm(self.normals, axis=1)[:, np.newaxis]
-        self.nedges = len(vertices)
-        self.lengths = np.linalg.norm(edges, axis=1)  # length of each edge
+    def __init__(self, inp, origin=None):
+
+        if origin is None:
+            self.origin = None
+        else:
+            self.origin = origin
+
+        # tuple (distances to origin, normal angles)
+        if type(inp) is tuple and len(inp) == 2 and type(inp[0]) is np.ndarray and type(inp[1]) is np.ndarray:
+            self.phi, self.theta = inp
+            self.theta = mod2pi(self.theta)
+            self.nedges = len(self.phi)
+            self.normals = np.stack([np.cos(self.theta), np.sin(self.theta)], axis=1)
+            if self.origin is None:
+                raise ValueError('Polygon must be initialized with an origin if given as a tuple (phi, theta)')
+            renormed_normals = self.normals * self.phi[:, np.newaxis]
+            rotated_normals = np.stack([-self.normals[:, 1], self.normals[:, 0]], axis=1)
+            projections = self.origin + renormed_normals
+            plt.plot(projections[:, 0], projections[:, 1], '.')
+            translated_projections = projections + rotated_normals
+            denom = ((projections[:, 0] - translated_projections[:, 0]) *
+                     np.roll(projections[:, 1] - translated_projections[:, 1], 1) -
+                     (projections[:, 1] - translated_projections[:, 1]) *
+                     np.roll(projections[:, 0] - translated_projections[:, 0], 1))
+            num1 = (projections[:, 0] * translated_projections[:, 1] - projections[:, 1] * translated_projections[:, 0])
+            num2 = (np.roll(projections[:, 0] * translated_projections[:, 1], 1) -
+                    np.roll(projections[:, 1] * translated_projections[:, 0], 1))
+            x = ((num1 * np.roll(projections[:, 0] - translated_projections[:, 0], 1) -
+                  (projections[:, 0] - translated_projections[:, 0]) * num2) / denom)
+            y = ((num1 * np.roll(projections[:, 1] - translated_projections[:, 1], 1) -
+                  (projections[:, 1] - translated_projections[:, 1]) * num2) / denom)
+            self.vertices = np.stack([x, y], axis=1)
+            self.polar_angles = mod2pi(self.theta + np.pi / 2)  # angles parametrizing the normals
+            edges = np.roll(self.vertices, -1, axis=0) - self.vertices
+            self.lengths = np.linalg.norm(edges, axis=1)  # length of each edge
+
+        elif type(inp) is np.ndarray:
+            self.vertices = inp
+            self.nedges = len(self.vertices)
+            if self.origin is None:
+                self.origin = np.mean(self.vertices, axis=0)
+                print('Polygon origin automatically set to {}'.format(self.origin))
+
+            edges = np.roll(self.vertices, -1, axis=0) - self.vertices
+            self.lengths = np.linalg.norm(edges, axis=1)  # length of each edge
+            self.normals = np.stack([edges[:, 1], -edges[:, 0]], axis=1)
+            self.normals /= np.linalg.norm(self.normals, axis=1)[:, np.newaxis]
+
+            # distances of each edge to the origin
+            self.phi = np.abs((np.roll(self.vertices[:, 0], 1, axis=0) - self.vertices[:, 0]) *
+                              (self.vertices[:, 1] - self.origin[1]) -
+                              (np.roll(self.vertices[:, 1], 1, axis=0) + self.vertices[:, 1]) *
+                              (self.vertices[:, 0] - self.origin[0])) / self.lengths
+
+            # compute polar angles of each edge with respect to the x-axis assuming origin is a vertex, in [-2, -2+2pi]
+            self.polar_angles = mod2pi(np.arctan2(edges[:, 1], edges[:, 0]))
+
+            self.theta = mod2pi(self.polar_angles - np.pi / 2)  # angles parametrizing the normals
+
+        else:
+            raise TypeError('Polygon must be initialized with a numpy array or a tuple of numpy arrays')
 
         edges /= self.lengths[:, np.newaxis]
         self.edges = edges
@@ -72,8 +127,6 @@ class Polygon:
         sin_sign = -np.sign(np.cross(-np.roll(edges, 1, axis=0), edges))
         self.angles = np.arccos(np.clip(dotprod, -1, 1))
         self.angles = mod2pi(np.where(sin_sign < 0, 2*np.pi - self.angles, self.angles))
-        # compute polar angles of each edge with respect to the x-axis, in [0, 2pi]
-        self.polar_angles = mod2pi(np.arctan2(edges[:, 1], edges[:, 0]))
 
     def shift(self, factor):
         """Shift the polygon by a factor, by moving the vertices along the bisecting line.
@@ -248,9 +301,9 @@ class ExtrudedPolygon(Polygon):
         return res
 
 
-def mod2pi(angle):
+def mod2pi(angle, lbound=-2.):
     """Return angle modulo 2*pi"""
-    return (angle + 2.) % (2 * np.pi) - 2.
+    return (angle - lbound) % (2 * np.pi) + lbound
 
 
 def is_in(vertices, points, min_dist=0.0):

@@ -60,6 +60,8 @@ def plot_boundary(bound, norm_vec, boundv, pos_src):
 class Polygon:
     def __init__(self, inp, origin=None):
 
+        self.polar_angles, self.phi, self.theta = None, None, None
+        self.vertices, self.nedges, self.lengths, self.normals = None, None, None, None
         if origin is None:
             self.origin = None
         else:
@@ -67,66 +69,17 @@ class Polygon:
 
         # tuple (distances to origin, normal angles)
         if type(inp) is tuple and len(inp) == 2 and type(inp[0]) is np.ndarray and type(inp[1]) is np.ndarray:
-            self.phi, self.theta = inp
-            self.theta = mod2pi(self.theta)
-            self.nedges = len(self.phi)
-            self.normals = np.stack([np.cos(self.theta), np.sin(self.theta)], axis=1)
-            if self.origin is None:
-                raise ValueError('Polygon must be initialized with an origin if given as a tuple (phi, theta)')
-            renormed_normals = self.normals * self.phi[:, np.newaxis]
-            rotated_normals = np.stack([-self.normals[:, 1], self.normals[:, 0]], axis=1)
-            projections = self.origin + renormed_normals
-            plt.plot(projections[:, 0], projections[:, 1], '.')
-            translated_projections = projections + rotated_normals
-            denom = ((projections[:, 0] - translated_projections[:, 0]) *
-                     np.roll(projections[:, 1] - translated_projections[:, 1], 1) -
-                     (projections[:, 1] - translated_projections[:, 1]) *
-                     np.roll(projections[:, 0] - translated_projections[:, 0], 1))
-            num1 = (projections[:, 0] * translated_projections[:, 1] - projections[:, 1] * translated_projections[:, 0])
-            num2 = (np.roll(projections[:, 0] * translated_projections[:, 1], 1) -
-                    np.roll(projections[:, 1] * translated_projections[:, 0], 1))
-            x = ((num1 * np.roll(projections[:, 0] - translated_projections[:, 0], 1) -
-                  (projections[:, 0] - translated_projections[:, 0]) * num2) / denom)
-            y = ((num1 * np.roll(projections[:, 1] - translated_projections[:, 1], 1) -
-                  (projections[:, 1] - translated_projections[:, 1]) * num2) / denom)
-            self.vertices = np.stack([x, y], axis=1)
-            self.polar_angles = mod2pi(self.theta + np.pi / 2)  # angles parametrizing the normals
-            edges = np.roll(self.vertices, -1, axis=0) - self.vertices
-            self.lengths = np.linalg.norm(edges, axis=1)  # length of each edge
+            self.update_param(*inp)
 
         elif type(inp) is np.ndarray:
-            self.vertices = inp
-            self.nedges = len(self.vertices)
             if self.origin is None:
-                self.origin = np.mean(self.vertices, axis=0)
+                self.origin = np.mean(inp, axis=0)
                 print('Polygon origin automatically set to {}'.format(self.origin))
 
-            edges = np.roll(self.vertices, -1, axis=0) - self.vertices
-            self.lengths = np.linalg.norm(edges, axis=1)  # length of each edge
-            self.normals = np.stack([edges[:, 1], -edges[:, 0]], axis=1)
-            self.normals /= np.linalg.norm(self.normals, axis=1)[:, np.newaxis]
-
-            # distances of each edge to the origin
-            self.phi = np.abs((np.roll(self.vertices[:, 0], 1, axis=0) - self.vertices[:, 0]) *
-                              (self.vertices[:, 1] - self.origin[1]) -
-                              (np.roll(self.vertices[:, 1], 1, axis=0) + self.vertices[:, 1]) *
-                              (self.vertices[:, 0] - self.origin[0])) / self.lengths
-
-            # compute polar angles of each edge with respect to the x-axis assuming origin is a vertex, in [-2, -2+2pi]
-            self.polar_angles = mod2pi(np.arctan2(edges[:, 1], edges[:, 0]))
-
-            self.theta = mod2pi(self.polar_angles - np.pi / 2)  # angles parametrizing the normals
+            self.update_vertices(inp)
 
         else:
             raise TypeError('Polygon must be initialized with a numpy array or a tuple of numpy arrays')
-
-        edges /= self.lengths[:, np.newaxis]
-        self.edges = edges
-        # compute inner angles
-        dotprod = np.sum(-np.roll(edges, 1, axis=0) * edges, axis=1)
-        sin_sign = -np.sign(np.cross(-np.roll(edges, 1, axis=0), edges))
-        self.angles = np.arccos(np.clip(dotprod, -1, 1))
-        self.angles = mod2pi(np.where(sin_sign < 0, 2*np.pi - self.angles, self.angles))
 
     def shift(self, factor):
         """Shift the polygon by a factor, by moving the vertices along the bisecting line.
@@ -222,6 +175,62 @@ class Polygon:
     def sample_inside(self, sep):
         points, triang = gmsh_sampling(self.vertices[:self.nedges, :], mesh_size=sep)
         return points[:, :2], triang
+
+    def _update_edges_and_angles(self):
+        self.edges = np.roll(self.vertices, -1, axis=0) - self.vertices
+        self.nedges = len(self.edges)
+        self.lengths = np.linalg.norm(self.edges, axis=1)  # length of each edge
+        renormed_edges = self.edges / self.lengths[:, np.newaxis]
+        # compute inner angles
+        dotprod = np.sum(-np.roll(renormed_edges, 1, axis=0) * renormed_edges, axis=1)
+        sin_sign = -np.sign(np.cross(-np.roll(renormed_edges, 1, axis=0), renormed_edges))
+        self.angles = np.arccos(np.clip(dotprod, -1, 1))
+        self.angles = mod2pi(np.where(sin_sign < 0, 2 * np.pi - self.angles, self.angles))
+
+    def update_param(self, new_phi, new_theta):
+        self.phi = new_phi
+        self.theta = mod2pi(new_theta)
+        self.nedges = len(self.phi)
+        self.normals = np.stack([np.cos(self.theta), np.sin(self.theta)], axis=1)
+        if self.origin is None:
+            raise ValueError('Polygon must be initialized with an origin if given as a tuple (phi, theta)')
+        renormed_normals = self.normals * self.phi[:, np.newaxis]
+        rotated_normals = np.stack([-self.normals[:, 1], self.normals[:, 0]], axis=1)
+        projections = self.origin + renormed_normals
+
+        translated_projections = projections + rotated_normals
+        denom = ((projections[:, 0] - translated_projections[:, 0]) *
+                 np.roll(projections[:, 1] - translated_projections[:, 1], 1) -
+                 (projections[:, 1] - translated_projections[:, 1]) *
+                 np.roll(projections[:, 0] - translated_projections[:, 0], 1))
+        num1 = (projections[:, 0] * translated_projections[:, 1] - projections[:, 1] * translated_projections[:, 0])
+        num2 = (np.roll(projections[:, 0] * translated_projections[:, 1], 1) -
+                np.roll(projections[:, 1] * translated_projections[:, 0], 1))
+        x = ((num1 * np.roll(projections[:, 0] - translated_projections[:, 0], 1) -
+              (projections[:, 0] - translated_projections[:, 0]) * num2) / denom)
+        y = ((num1 * np.roll(projections[:, 1] - translated_projections[:, 1], 1) -
+              (projections[:, 1] - translated_projections[:, 1]) * num2) / denom)
+        self.vertices = np.stack([x, y], axis=1)
+        self.polar_angles = mod2pi(self.theta + np.pi / 2)  # angles parametrizing the normals
+        self._update_edges_and_angles()
+
+    def update_vertices(self, new_vert):
+        self.vertices = new_vert
+        self._update_edges_and_angles()
+        self.lengths = np.linalg.norm(self.edges, axis=1)  # length of each edge
+        self.normals = np.stack([self.edges[:, 1], -self.edges[:, 0]], axis=1)
+        self.normals /= np.linalg.norm(self.normals, axis=1)[:, np.newaxis]
+
+        # distances of each edge to the origin
+        self.phi = np.abs((np.roll(self.vertices[:, 0], 1, axis=0) - self.vertices[:, 0]) *
+                          (self.vertices[:, 1] - self.origin[1]) -
+                          (np.roll(self.vertices[:, 1], 1, axis=0) + self.vertices[:, 1]) *
+                          (self.vertices[:, 0] - self.origin[0])) / self.lengths
+
+        # compute polar angles of each edge with respect to the x-axis assuming origin is a vertex, in [-2, -2+2pi]
+        self.polar_angles = mod2pi(np.arctan2(self.edges[:, 1], self.edges[:, 0]))
+
+        self.theta = mod2pi(self.polar_angles - np.pi / 2)  # angles parametrizing the normals
 
 
 class Ellipse:

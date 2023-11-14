@@ -12,8 +12,33 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 
 class Simulation:
-    def __init__(self, vertices, fs, nfreq, boundsep, dx, pos_src,  cond='neumann', add_src=15, nsrc_schedule=None,
-                 min_dist=0.01, error_sep=None, error_thresh=0.05, sep_red=0.8, beta=None):
+    def __init__(self, vertices: np.ndarray, fs: float, nfreq: int, boundsep: float, dx: float, pos_src: np.ndarray,
+                 cond='neumann', add_src=15, nsrc_schedule=None, min_dist=0.01, error_sep=None, error_thresh=0.05,
+                 sep_red=0.8, beta=None):
+        """
+        Simulation class for Helmholtz equation: simulate a source at pos_src in a polygonal domain with boundary
+        conditions at different frequencies. Can generate time-domain signals by applying an inverse Fourier transform.
+        Args:
+            - vertices: vertices of the polygonal domain
+            - fs: sampling frequency
+            - nfreq: number of frequencies
+            - boundsep: distance between boundary points of the room walls
+            - dx: distance between real and virtual boundaries
+            - pos_src: position of the source
+            - cond: boundary condition (neumann, dirichlet, robin)
+            - add_src: number of additional sources in the enriched MFS basis
+            - nsrc_schedule: strategy to sample the virtual boundary. Should contain a key "sampling_method" which can
+        be either "separation" or "per_wavelength". The key "freq_marks" should refer to an array of frequencies at
+        which to resample the virtual boundary. If the method is "per_wavelength", the key "nsrc" should contain an
+        array of number of sources per wavelength at each frequency mark used to compute separation. If the method is
+        "separation", the separations should be given using the key "sep".
+            - min_dist: minimum distance between boundary points and the corners of the polygon
+            - error_sep: separation between sources used to verify the boundary error at each freq_mark is under the
+        threshold
+            - error_thresh: threshold for the boundary error at initialization
+            - sep_red: reduction factor applied at the separation between sources at each resampling in case the error
+        is above the threshold
+        """
         self.fs, self.dx = fs, dx
         self.poly = Polygon(vertices)
         self.freqs = np.linspace(0, fs, nfreq)

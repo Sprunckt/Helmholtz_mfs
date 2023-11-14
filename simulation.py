@@ -91,8 +91,6 @@ class Simulation:
         # convert to integers between 0 and nmarks-1
         _, self.freq_ref = np.unique(self.freq_ref, return_inverse=True)
 
-        print(nsrc_schedule)
-
         # check if there are enough boundary points, take the max number of virtual sources if not
         if boundsep > nsrc_schedule["sep"][-1]:
             boundsep = nsrc_schedule["sep"][-1]
@@ -184,7 +182,8 @@ class Simulation:
 
         return res
 
-    def simulate(self, nworkers):
+    def simulate(self, nworkers=1):
+        """Compute the solution coefficients at each frequency using nworkers processes."""
         t1 = time.time()
         ind_comp = np.where(~self.simulated)[0]
         if nworkers == 1:  # 1 frequency at a time
@@ -203,8 +202,12 @@ class Simulation:
 
         print("total simulation time : {} s".format(time.time()-t1))
 
-    def compute(self, compute_points, nworkers, tol=0.):
-        """Compute the solution at the given points (shape (npoints, d)) at all frequencies"""
+    def compute(self, compute_points, nworkers=1, tol=0.):
+        """Compute the solution at the given points (shape (npoints, d)) at all frequencies, returns a tuple
+        (res, is_in) of arrays of shape (npoints, nfreqs) and (npoints,) respectively, where is_in is True if the
+        corresponding point is inside the domain, False otherwise and res contains the scalar solution at each compute
+        point and frequency."""
+
         t1 = time.time()
         in_mask = is_in(self.mfs.poly.vertices, compute_points, min_dist=tol)
 

@@ -222,9 +222,9 @@ class Polygon:
         self.normals /= np.linalg.norm(self.normals, axis=1)[:, np.newaxis]
 
         # distances of each edge to the origin
-        self.phi = np.abs((np.roll(self.vertices[:, 0], 1, axis=0) - self.vertices[:, 0]) *
+        self.phi = np.abs((np.roll(self.vertices[:, 0], -1, axis=0) - self.vertices[:, 0]) *
                           (self.vertices[:, 1] - self.origin[1]) -
-                          (np.roll(self.vertices[:, 1], 1, axis=0) + self.vertices[:, 1]) *
+                          (np.roll(self.vertices[:, 1], -1, axis=0) - self.vertices[:, 1]) *
                           (self.vertices[:, 0] - self.origin[0])) / self.lengths
 
         # compute polar angles of each edge with respect to the x-axis assuming origin is a vertex, in [-2, -2+2pi]

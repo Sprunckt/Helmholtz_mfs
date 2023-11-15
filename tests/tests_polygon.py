@@ -73,5 +73,6 @@ class TestPolygon3(unittest.TestCase):
         close1 = a + np.linspace(0, min_dist, 100, endpoint=False)[1:-1].reshape(-1, 1) * vec
         self.assertFalse(np.all(self.poly.is_in(close1, min_dist)))  # close to a
         close2 = b - np.linspace(0, min_dist, 100, endpoint=False)[1:-1].reshape(-1, 1) * vec
+        self.assertFalse(np.all(self.poly.is_in(close2, min_dist)))  # close to b
         exterior = a - np.linspace(0, 1, 100, endpoint=False)[:-1].reshape(-1, 1) * vec
         self.assertFalse(np.all(self.poly.is_in(exterior, min_dist)))  # outside

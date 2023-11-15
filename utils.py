@@ -232,6 +232,13 @@ class Polygon:
 
         self.theta = mod2pi(self.polar_angles - np.pi / 2)  # angles parametrizing the normals
 
+    def is_in(self, points, min_dist=0):
+        """Return an array of booleans indicating whether each point is inside the polygon."""
+        # compute scalar products between each outward normal and the vector from the origin to the point
+        return np.all(np.sum((np.reshape(points, (-1, 2)) - self.origin)[:, np.newaxis, :]*
+                             self.normals[np.newaxis, :, :], axis=2)
+                      <= self.phi[np.newaxis, :] - min_dist, axis=1)
+
 
 class Ellipse:
     def __init__(self, radiusx, radiusy, center=None):
@@ -313,18 +320,6 @@ class ExtrudedPolygon(Polygon):
 def mod2pi(angle, lbound=-2.):
     """Return angle modulo 2*pi"""
     return (angle - lbound) % (2 * np.pi) + lbound
-
-
-def is_in(vertices, points, min_dist=0.0):
-    """Check if points (shape (npoints, d)) are inside and at a distance superior to min_dist of a (not necessarily
-     convex) polygon given by its vertices (shape (nvertices, d)) in counter-clockwise order, or by a Polygon object.
-    Return an array of bool."""
-    outside = np.zeros(points.shape[0], dtype=bool)
-    poly = ShapelyPolygon(vertices)
-    for i, p in enumerate(points):
-        pp = ShapelyPoint(p)
-        outside[i] = (poly.contains(pp)) and (poly.hausdorff_distance(pp) > min_dist)
-    return outside
 
 
 def gmsh_sampling(vertices, mesh_size):

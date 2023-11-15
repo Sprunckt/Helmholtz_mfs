@@ -1,6 +1,6 @@
 import numpy as np
 from mfs import HelmholtzMFS, SampledBoundary
-from utils import Polygon, c, is_in
+from utils import Polygon, c
 import multiprocessing as mp
 import time
 from scipy import signal
@@ -209,7 +209,7 @@ class Simulation:
         point and frequency."""
 
         t1 = time.time()
-        in_mask = is_in(self.mfs.poly.vertices, compute_points, min_dist=tol)
+        in_mask = self.poly.is_in(compute_points, min_dist=tol)
 
         res_tot = np.full([len(compute_points), self.nfreqs], np.nan, dtype=np.complex128)
         res_tot[in_mask, 0] = 0.  # 0 frequency

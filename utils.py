@@ -71,7 +71,7 @@ class Polygon:
         if type(inp) is tuple and len(inp) == 2 and type(inp[0]) is np.ndarray and type(inp[1]) is np.ndarray:
             self.update_param(*inp)
 
-        elif type(inp) is np.ndarray:
+        elif type(inp) is np.ndarray:  # vertices
             if self.origin is None:
                 self.origin = np.mean(inp, axis=0)
                 print('Polygon origin automatically set to {}'.format(self.origin))
@@ -238,6 +238,21 @@ class Polygon:
         return np.all(np.sum((np.reshape(points, (-1, 2)) - self.origin)[:, np.newaxis, :]*
                              self.normals[np.newaxis, :, :], axis=2)
                       <= self.phi[np.newaxis, :] - min_dist, axis=1)
+
+    def plot(self):
+        plt.plot(self.vertices[:, 0], self.vertices[:, 1], 'x')
+        plt.plot(self.vertices[:, 0], self.vertices[:, 1], 'k')
+        plt.plot([self.vertices[-1, 0], self.vertices[0, 0]], [self.vertices[-1, 1], self.vertices[0, 1]], 'k')
+        plt.plot(self.origin[0], self.origin[1], 'o')
+        projections = self.origin + self.phi[:, np.newaxis] * self.normals
+
+        # add vertex numbers as text
+        for i in range(self.nedges):
+            plt.text(self.vertices[i, 0], self.vertices[i, 1], str(i))
+            plt.text(projections[i, 0], projections[i, 1], str(i))
+
+        plt.axis('equal')
+        plt.show()
 
 
 class Ellipse:

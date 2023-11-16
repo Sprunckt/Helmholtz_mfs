@@ -47,6 +47,11 @@ def particular_solution_gradient(dist, theta, k, mu, polar_offset):
     return np.stack([dr*ctheta - stheta*dtheta/dist, dr*stheta + ctheta*dtheta/dist], axis=-1)
 
 
+def particular_solution_gradient3d(dist, theta, k, mu, polar_offset):
+    return np.concatenate([particular_solution_gradient(dist, theta, k, mu, polar_offset),
+                           np.zeros((dist.shape[0], dist.shape[1], 1))], axis=-1)
+
+
 def neumann_operator(points, normvec, alpha, sourcesv, k, return_diffs=False,
                      fund_der_wrap=fundamental_solution_derivative, individual_contr=False):
     """ Computes the normal derivative of the solution given by the virtual sources sourcesv with coefficients alpha at
@@ -88,9 +93,6 @@ def robin_operator(points, normvec, alpha, sourcesv, k, beta, fund_wrap, fund_de
 
 
 def dirichlet_operator(points, _, alpha, sourcesv, k, fund_wrap, individual_contr=False):
-    """ Computes the solution given by the virtual sources sourcesv with coefficients alpha at
-    the points 'points' with normal vector normvec. Return the contribution from the virtual sources.
-    """
     res = fund_wrap(points, sourcesv, k) * alpha.reshape(1, -1)
     if not individual_contr:
         res = np.sum(res, axis=1)
@@ -136,8 +138,10 @@ class HelmholtzMFS:
 
         if isinstance(poly, ExtrudedPolygon):
             self.d, self.fund_wrap, self.fund_der_wrap = 3, fundamental_solution3d, fundamental_solution_derivative3d
+            self.particular_wrap, self.particular_der_wrap = particular_solution, particular_solution_gradient3d
         elif isinstance(poly, Polygon):
             self.d, self.fund_wrap, self.fund_der_wrap = 2, fundamental_solution, fundamental_solution_derivative
+            self.particular_wrap, self.particular_der_wrap = particular_solution, particular_solution_gradient
         else:
             raise ValueError("poly must be a Polygon or ExtrudedPolygon instance")
 
@@ -221,7 +225,7 @@ class HelmholtzMFS:
             factor = self.factor
             indstart, indstop = self.nsrc, self.nsrc + self.poly.nedges
             for t in range(self.add_fun):
-                res += np.sum(particular_solution(norms, angles, k, t*factor) *
+                res += np.sum(self.particular_wrap(norms, angles, k, t*factor) *
                               self.ampl[indstart:indstop].reshape(1, -1), axis=1)
 
                 indstart, indstop = indstop, indstop + self.poly.nedges
@@ -259,17 +263,17 @@ class HelmholtzMFS:
             indstart, indstop = self.nsrc, self.nsrc + self.poly.nedges
             if not use_src:
                 for t in range(self.add_fun):
-                    grad = particular_solution_gradient(norms, angles, k, t * self.factor,
-                                                        self.poly.polar_angles)  # (np, nvertices, 2)
+                    grad = self.particular_der_wrap(norms, angles, k, t * self.factor,
+                                                    self.poly.polar_angles)  # (np, nvertices, 2)
                     if self.cond == 'neumann':
                         add_contr = (np.sum(grad * normals[:, np.newaxis, :], axis=-1) *
                                      self.ampl[indstart:indstop].reshape(1, -1))
                     elif self.cond == 'robin':
                         add_contr = ((np.sum(grad * normals[:, np.newaxis, :], axis=-1) + beta.reshape(-1, 1) *
-                                      k*1j*particular_solution(norms, angles, k, t*self.factor)) *
+                                      k*1j*self.particular_wrap(norms, angles, k, t*self.factor)) *
                                      self.ampl[indstart:indstop].reshape(1, -1))
                     elif self.cond == 'dirichlet':
-                        add_contr = (particular_solution(norms, angles, k, t*self.factor) *
+                        add_contr = (self.particular_wrap(norms, angles, k, t*self.factor) *
                                      self.ampl[indstart:indstop].reshape(1, -1))
                     else:
                         raise ValueError("Unknown boundary condition")
@@ -281,7 +285,7 @@ class HelmholtzMFS:
                     indstart, indstop = indstop, indstop + self.poly.nedges
         return res
 
-    def plot_bound_values(self, nplot, k, show=True, name="", plot3d=False):
+    def plot_bound_values(self, nplot, k, show=True, name="", plot3d=False, scale=0.95):
         if self.d == 2:
             mfs_val, src_val, edges, plot_nodes = [], [], [t * nplot for t in range(1, self.poly.nedges)], []
             for j in range(self.poly.nedges):

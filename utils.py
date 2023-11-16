@@ -164,7 +164,7 @@ class Polygon:
     def compute_angles(self, points):
         """Compute polar angles of points with respect to the vertices of the polygon, using the next edge (in
         trigonometric order) as polar axis. Return angles and vectors from vertices to points."""
-        diffs = points[:, np.newaxis] - self.vertices[np.newaxis, :]  # shape (npoints, nvertices, 2)
+        diffs = points[:, np.newaxis, :2] - self.vertices[np.newaxis, :self.nedges, :2]  # shape (npoints, nvertices, 2)
         norms = np.linalg.norm(diffs, axis=2)
 
         # shape (npoints, nvertices)
@@ -233,9 +233,9 @@ class Polygon:
         self.theta = mod2pi(self.polar_angles - np.pi / 2)  # angles parametrizing the normals
 
     def is_in(self, points, min_dist=0):
-        """Return an array of booleans indicating whether each point is inside the polygon."""
+        """Return an array of booleans indicating whether each point is inside the (convex) polygon."""
         # compute scalar products between each outward normal and the vector from the origin to the point
-        return np.all(np.sum((np.reshape(points, (-1, 2)) - self.origin)[:, np.newaxis, :]*
+        return np.all(np.sum((np.reshape(points, (-1, 2)) - self.origin)[:, np.newaxis, :] *
                              self.normals[np.newaxis, :, :], axis=2)
                       <= self.phi[np.newaxis, :] - min_dist, axis=1)
 

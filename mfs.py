@@ -355,7 +355,7 @@ class HelmholtzMFS:
                 plt.savefig("data/fig/Neumann_edge_{}_nsrc={}.png".format(name, self.nsrc))
 
         else:  # plot boundary values in 3d, nplot is the separation for the resampled boundary
-            boundplot, normplot, ids, tri = self.poly.sample(nplot, min_dist=0., return_triangulation=True)
+            boundplot, normplot, ids, tri = self.poly.sample(nplot, min_dist=0.005, return_triangulation=True)
             print("Plotting {} points on the boundary".format(len(boundplot)))
             mfs_val = self.boundary_operator(boundplot, ids, k)
             src_val = -self.boundary_operator(boundplot, ids, k, use_src=True)
@@ -364,22 +364,24 @@ class HelmholtzMFS:
             print("Relative error on the real part: {:3f}".format(error_real))
             print("Relative error on the imaginary part: {:3f}".format(error_imag))
             mlab.figure()
+            min_val, max_val = np.min(np.real(src_val))*scale, np.max(np.real(src_val))*scale
             for i in range(self.poly.nedges+2):
                 plot_nodes = boundplot[ids == i]
                 triz = tri[i]
                 mesh = mlab.triangular_mesh(plot_nodes[:, 0], plot_nodes[:, 1], plot_nodes[:, 2], triz,
-                                            scalars=np.real(mfs_val[ids == i]), representation='surface')
+                                            scalars=np.real(src_val[ids == i]), vmin=min_val, vmax=max_val,
+                                            representation='surface')
             cbar = mlab.colorbar(orientation='vertical')
-            drange = cbar.data_range
+            cbar.data_range = (min_val, max_val)
             mlab.figure()
             for i in range(self.poly.nedges+2):
                 plot_nodes = boundplot[ids == i]
                 triz = tri[i]
                 mesh = mlab.triangular_mesh(plot_nodes[:, 0], plot_nodes[:, 1], plot_nodes[:, 2], triz,
-                                            scalars=np.clip(np.real(src_val[ids == i]), drange[0], drange[1]),
+                                            scalars=np.real(mfs_val[ids == i]), vmin=min_val, vmax=max_val,
                                             representation='surface')
             cbar2 = mlab.colorbar(orientation='vertical')
-            cbar2.data_range = drange
+            cbar2.data_range = (min_val, max_val)
             mlab.show()
 
     def plot_boundary(self, show=True):

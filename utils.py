@@ -294,17 +294,15 @@ class ExtrudedPolygon(Polygon):
         renormed_edges = self.edges / np.linalg.norm(self.edges, axis=1)[:, np.newaxis]
 
         boundary, bound_ids, normals, triangulations = [], [], [], []
-        e3 = np.array([0, 0, 1], dtype=float)*(self.height - min_dist)
+        e3 = np.array([0, 0, 1], dtype=float)*(self.height - 2*min_dist)
         for i in range(self.nedges):  # vertical faces
-            points, triang = gmsh_sampling(np.stack([self.vertices[i] +
-                                                     np.array([renormed_edges[i, 0]*min_dist,
-                                                               renormed_edges[i, 1]*min_dist, min_dist]),
-                                                     self.vertices[(i+1) % self.nedges] +
-                                                     np.array([-renormed_edges[i, 0]*min_dist,
-                                                               -renormed_edges[i, 1]*min_dist, min_dist]),
-                                                     self.vertices[(i+1) % self.nedges] + e3, self.vertices[i] + e3],
-                                                    axis=0),
+            shifted1 = self.vertices[i] + np.array([renormed_edges[i, 0] * min_dist,
+                                                    renormed_edges[i, 1] * min_dist, min_dist])
+            shifted2 = self.vertices[(i + 1) % self.nedges] + np.array([-renormed_edges[i, 0] * min_dist,
+                                                                        -renormed_edges[i, 1] * min_dist, min_dist])
+            points, triang = gmsh_sampling(np.stack([shifted1, shifted2, shifted2 + e3, shifted1 + e3], axis=0),
                                            mesh_size=separation)
+
 
             boundary.append(points)
             bound_ids.append(np.full(points.shape[0], i))

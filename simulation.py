@@ -1,6 +1,6 @@
 import numpy as np
 from mfs import HelmholtzMFS, SampledBoundary
-from utils import Polygon, c
+from utils import Polygon, c, ExtrudedPolygon
 import multiprocessing as mp
 import time
 from scipy import signal
@@ -14,7 +14,7 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 class Simulation:
     def __init__(self, vertices: np.ndarray, fs: float, nfreq: int, boundsep: float, dx: float, pos_src: np.ndarray,
                  cond='neumann', add_src=15, nsrc_schedule=None, min_dist=0.01, error_sep=None, error_thresh=0.05,
-                 sep_red=0.8, beta=None):
+                 sep_red=0.8, beta=None, height=0.):
         """
         Simulation class for Helmholtz equation: simulate a source at pos_src in a polygonal domain with boundary
         conditions at different frequencies. Can generate time-domain signals by applying an inverse Fourier transform.
@@ -40,7 +40,10 @@ class Simulation:
         is above the threshold
         """
         self.fs, self.dx = fs, dx
-        self.poly = Polygon(vertices)
+        if height > 0:
+            self.poly = ExtrudedPolygon(vertices, height)
+        else:
+            self.poly = Polygon(vertices)
         self.freqs = np.linspace(0, fs, nfreq)
         self.wave_numbers = 2 * np.pi * self.freqs / c
         self.nfreqs = len(self.freqs)

@@ -69,9 +69,14 @@ class Simulation:
             nsrc_schedule["sample_marks"] = np.argmax(self.freqs[np.newaxis, :] >=
                                                       nsrc_schedule["freq_marks"][:, np.newaxis], axis=1)
 
-        assert len(nsrc_schedule["sample_marks"]) == len(nsrc_schedule["nsrc"]) - 1, "number of sample marks should be"\
-                                                                                     " one less than number of source"\
-                                                                                     " parameters (last freq not in)"
+        message = "number of sample marks should be one less than number of source parameters (last freq not in)"
+        if nsrc_schedule["method"] == "per_wavelength":
+            assert len(nsrc_schedule["sample_marks"]) == len(nsrc_schedule["nsrc"]) - 1, message
+        elif nsrc_schedule["method"] == "separation":
+            assert len(nsrc_schedule["sample_marks"]) == len(nsrc_schedule["sep"]) - 1, message
+        else:
+            raise ValueError("sampling method should be either per_wavelength or separation")
+
         # add last sample mark (highest frequency)
         nsrc_schedule["sample_marks"] = np.concatenate([nsrc_schedule["sample_marks"], [len(self.freqs) - 1]])
         if nsrc_schedule["method"] == "per_wavelength":

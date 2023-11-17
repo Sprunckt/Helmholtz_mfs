@@ -158,7 +158,7 @@ class HelmholtzMFS:
         self.nsrc = len(self.virtual_bound)
 
         if beta is None:  # default null value for beta
-            self.beta = np.zeros(self.poly.nedges)
+            self.beta = np.zeros(self.poly.nedges + 2*(self.d - 2))
         else:
             # if beta is given, it must be a vector of length nedges
             assert len(beta) == self.poly.nedges + 2*(self.d - 2), "beta must be a vector of length nedges if d=2, " \

@@ -197,25 +197,32 @@ class Polygon:
         renormed_normals = self.normals * self.phi[:, np.newaxis]
         rotated_normals = np.stack([-self.normals[:, 1], self.normals[:, 0]], axis=1)
         projections = self.origin + renormed_normals
+        point_pair = np.stack([projections, projections + rotated_normals], axis=1)
 
-        translated_projections = projections + rotated_normals
-        denom = ((projections[:, 0] - translated_projections[:, 0]) *
-                 np.roll(projections[:, 1] - translated_projections[:, 1], 1) -
-                 (projections[:, 1] - translated_projections[:, 1]) *
-                 np.roll(projections[:, 0] - translated_projections[:, 0], 1))
-        num1 = (projections[:, 0] * translated_projections[:, 1] - projections[:, 1] * translated_projections[:, 0])
-        num2 = (np.roll(projections[:, 0] * translated_projections[:, 1], 1) -
-                np.roll(projections[:, 1] * translated_projections[:, 0], 1))
-        x = ((num1 * np.roll(projections[:, 0] - translated_projections[:, 0], 1) -
-              (projections[:, 0] - translated_projections[:, 0]) * num2) / denom)
-        y = ((num1 * np.roll(projections[:, 1] - translated_projections[:, 1], 1) -
-              (projections[:, 1] - translated_projections[:, 1]) * num2) / denom)
-        self.vertices = np.stack([x, y], axis=1)
-        self.polar_angles = mod2pi(self.theta + np.pi / 2)  # angles parametrizing the normals
-        self._update_edges_and_angles()
+        # compute every possible intersections between the lines defined by the normals
+        intersections = []
+        for i in range(self.nedges):
+            tmp = compute_intersections(point_pair[i], point_pair[i+1:])
+            intersections.append(tmp[np.isfinite(tmp[:, 0])])
 
-    def update_vertices(self, new_vert):
+        intersections = np.concatenate(intersections, axis=0)
+
+        self.vertices = intersections[self.is_in(intersections, tol=1e-6)]#intersections[ConvexHull(intersections).vertices]
+
+        self.update_vertices(self.vertices, sort=True)
+
+    def sort_vertices(self):
+        """Sort vertices in trigonometric order"""
+        angles = mod2pi(np.arctan2(self.vertices[:, 1] - self.origin[1], self.vertices[:, 0] - self.origin[0]))
+        self.vertices = self.vertices[np.argsort(angles)]
+
+    def update_vertices(self, new_vert, sort=False):
         self.vertices = new_vert
+        if sort:
+            self.sort_vertices()
+        if len(self.vertices) < 3:
+            raise ValueError("Number of vertices should exceed 2")
+
         self._update_edges_and_angles()
         self.lengths = np.linalg.norm(self.edges, axis=1)  # length of each edge
         self.normals = np.stack([self.edges[:, 1], -self.edges[:, 0]], axis=1)
@@ -232,12 +239,12 @@ class Polygon:
 
         self.theta = mod2pi(self.polar_angles - np.pi / 2)  # angles parametrizing the normals
 
-    def is_in(self, points, min_dist=0):
+    def is_in(self, points, min_dist=0, tol=1e-6):
         """Return an array of booleans indicating whether each point is inside the (convex) polygon."""
         # compute scalar products between each outward normal and the vector from the origin to the point
         return np.all(np.sum((np.reshape(points, (-1, 2)) - self.origin)[:, np.newaxis, :] *
                              self.normals[np.newaxis, :, :], axis=2)
-                      <= self.phi[np.newaxis, :] - min_dist, axis=1)
+                      <= self.phi[np.newaxis, :] - min_dist + tol, axis=1)
 
     def plot(self):
         plt.plot(self.vertices[:, 0], self.vertices[:, 1], 'x')
@@ -340,3 +347,27 @@ def gmsh_sampling(vertices, mesh_size):
         geom.add_polygon(vertices, mesh_size=mesh_size)
         mesh = geom.generate_mesh()
     return mesh.points, mesh.cells_dict["triangle"]
+
+
+def compute_intersections(d1, d2, tol=1e-6):
+    """Compute intersections between line d1 to lines d2, defined by two points each.
+    Assume d1 of shape (2, 2), and d2 are of shape (nlines, 2, 2). Last axis gives the coordinates of the two points.
+    Returns an array of shape (nlines, 2) giving the coordinates of the intersections."""
+    if d2.ndim == 2:
+        d2 = d2[np.newaxis, :, :]
+
+    denom = ((d1[0, 0] - d1[1, 0]) * (d2[:, 0, 1] - d2[:, 1, 1]) - (d1[0, 1] - d1[1, 1]) * (d2[:, 0, 0] - d2[:, 1, 0]))
+    res = np.zeros((d2.shape[0], 2))
+    ind_nan = np.abs(denom) < tol
+    ind_finite = ~ind_nan
+    res[ind_nan] = np.nan
+    denom = denom[ind_finite]
+
+    num1 = (d1[0, 0] * d1[1, 1] - d1[0, 1] * d1[1, 0])
+    num2 = (d2[ind_finite, 0, 0] * d2[ind_finite, 1, 1] - d2[ind_finite, 0, 1] * d2[ind_finite, 1, 0])
+    # shape (nlines,)
+    x = ((num1 * (d2[ind_finite, 0, 0] - d2[ind_finite, 1, 0]) - (d1[0, 0] - d1[1, 0]) * num2) / denom)
+    y = ((num1 * (d2[ind_finite, 0, 1] - d2[ind_finite, 1, 1]) - (d1[0, 1] - d1[1, 1]) * num2) / denom)
+    res[ind_finite] = np.stack([x, y], axis=1)
+
+    return res

@@ -27,7 +27,10 @@ class TestPolygon1(unittest.TestCase):
                                       np.sin(2*np.pi*i / k)] for i in range(k)]), origin=self.origin)
             poly2 = Polygon((poly.phi, poly.theta), origin=self.origin)
             for i in range(k):
-                self.assertAlmostEqual(np.linalg.norm(poly2.vertices[i] - poly.vertices[i]), 0, places=12)
+                # sort vertices by angle
+                sorted_v1 = poly.vertices[np.argsort(poly.polar_angles), :]
+                sorted_v2 = poly2.vertices[np.argsort(poly2.polar_angles), :]
+                self.assertAlmostEqual(np.linalg.norm(sorted_v1[i] - sorted_v2[i]), 0, places=12)
 
 
 class TestPolygon2(unittest.TestCase):

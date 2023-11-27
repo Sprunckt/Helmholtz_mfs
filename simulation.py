@@ -4,11 +4,7 @@ from utils import Polygon, c, ExtrudedPolygon
 import multiprocessing as mp
 import time
 from scipy import signal
-import matplotlib.pyplot as plt
 from functools import partial
-from matplotlib.animation import FuncAnimation
-import pickle
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 
 class Simulation:
@@ -101,7 +97,7 @@ class Simulation:
 
         # check if there are enough boundary points, take the max number of virtual sources if not
         if boundsep > nsrc_schedule["sep"][-1]:
-            boundsep = nsrc_schedule["sep"][-1]
+            boundsep = nsrc_schedule["sep"][-1]*0.95
             print("insufficient boundary separation to account for all frequencies, clipping")
 
         # sample boundary using boundsep
@@ -151,9 +147,13 @@ class Simulation:
                                                                   len(self.vpos[i])))
 
                     if nsrc_schedule["sep"][i] < boundsep:
+                        boundsep = nsrc_schedule["sep"][i]*0.95
                         print("error above threshold, clipping boundary separation to minimal source separation")
-                        self.mfs.update_boundary(SampledBoundary(self.poly, nsrc_schedule["sep"][i], min_dist=min_dist,
+                        self.mfs.update_boundary(SampledBoundary(self.poly, boundsep, min_dist=min_dist,
                                                                  sample_type="separation", dx=self.dx))
+                        if error_sep > boundsep:
+                            error_sep = boundsep * 0.9
+                            print("error_sep is larger than boundsep, clipping")
 
             if max_tries == 0:
                 print("error threshold not reached, simulation might be inaccurate")
@@ -164,6 +164,25 @@ class Simulation:
             print("simulating frequency {}; time {} s".format(self.freqs[indfreq], t2-t1))
             print("number of sources: {} relative error: {}".format(self.mfs.nsrc, rel_error))
         self.boundsep = boundsep
+        self.nsrc_schedule = nsrc_schedule
+
+    def _resample(self):
+        for i in range(len(self.vpos)):
+            self.vpos[i] = SampledBoundary(self.poly, self.nsrc_schedule["sep"][i], min_dist=0., dx=self.dx)
+        self.mfs.update_boundary(SampledBoundary(self.poly, self.boundsep, min_dist=0., dx=self.dx))
+
+        nsrc_max = len(self.vpos[-1])
+        while nsrc_max > self.mfs.nsrc:
+            self.boundsep *= 0.95
+            self.mfs.update_boundary(SampledBoundary(self.poly, self.boundsep, min_dist=0., dx=self.dx))
+
+    def update_vertices(self, new_vert):
+        self.poly.update_vertices(new_vert)
+        self._resample()
+
+    def update_params(self, new_phi, new_theta):
+        self.poly.update_param(new_phi, new_theta)
+        self._resample()
 
     def simulate_freq(self, ind):
         t1 = time.time()

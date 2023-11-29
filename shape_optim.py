@@ -1,7 +1,7 @@
 from simulation import Simulation
 import numpy as np
-from scipy.optimize import minimize
-
+from scipy.optimize import minimize, differential_evolution
+from utils import mod2pi
 
 class ShapeOptimizer:
     def __init__(self, init_vertices: np.ndarray, fs: float, nfreq: int, source_pos: np.ndarray, mic_pos: np.ndarray,
@@ -21,15 +21,23 @@ class ShapeOptimizer:
         bounds = [(minr, rmax) for _ in range(self.sim.poly.nedges)] + \
                  [(-4*np.pi, 4*np.pi) for _ in range(self.sim.poly.nedges)]
         p0 = np.concatenate([self.sim.poly.phi, self.sim.poly.theta])
+        counter = {"ncall":0}
         print("optimizing...")
-        opt_res = minimize(self.cost_fun, p0, method='L-BFGS-B', bounds=bounds)
+        opt_res = minimize(self.cost_fun, p0, method='Nelder-Mead', 
+        bounds=bounds, args=(counter,))
         print("done")
         return opt_res
 
-    def cost_fun(self, params):
-        phi, theta = params[:self.sim.poly.nedges], params[self.sim.poly.nedges:]
+    def cost_fun(self, params, counter):
+        counter["ncall"] += 1
+        phi, theta = params[:self.sim.poly.nedges], mod2pi(params[self.sim.poly.nedges:])
         self.sim.poly.update_param(phi, theta)
+        self.sim.reset()
         self.sim.simulate(self.nprocess)
         obs_sim, _ = self.sim.compute(self.mic_pos, self.nprocess)
         diff = obs_sim - self.observations
-        return 0.5*np.sum(diff*diff.conj()).real
+        err = 0.5*np.sum(diff*diff.conj()).real
+        print("{} calls, err {}, params".format(counter["ncall"], err), 
+                phi, theta)
+
+        return err

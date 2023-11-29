@@ -166,6 +166,9 @@ class Simulation:
         self.boundsep = boundsep
         self.nsrc_schedule = nsrc_schedule
 
+    def reset(self):
+        self.simulated[1:] = False 
+
     def _resample(self):
         for i in range(len(self.vpos)):
             self.vpos[i] = SampledBoundary(self.poly, self.nsrc_schedule["sep"][i], min_dist=0., dx=self.dx)

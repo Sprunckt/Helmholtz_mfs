@@ -31,7 +31,7 @@ class ShapeOptimizer:
     def cost_fun(self, params, counter):
         counter["ncall"] += 1
         phi, theta = params[:self.sim.poly.nedges], mod2pi(params[self.sim.poly.nedges:])
-        self.sim.poly.update_param(phi, theta)
+        self.sim.update_params(phi, theta)
         self.sim.reset()
         self.sim.simulate(self.nprocess)
         obs_sim, _ = self.sim.compute(self.mic_pos, self.nprocess)

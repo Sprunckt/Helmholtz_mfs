@@ -39,11 +39,11 @@ class Simulation:
         if height > 0:
             self.poly = ExtrudedPolygon(vertices, height)
         else:
-            self.poly = Polygon(vertices)
+            self.poly = Polygon(vertices, origin=np.zeros(2))
         self.freqs = np.linspace(0, fs, nfreq)
         self.wave_numbers = 2 * np.pi * self.freqs / c
         self.nfreqs = len(self.freqs)
-
+        self.min_dist = min_dist
         # ampl will contain the amplitudes for each source at each freq, vpos the boundary positions at each mark
         self.ampl, self.vpos = [None for _ in range(self.nfreqs)], []
 
@@ -172,12 +172,14 @@ class Simulation:
     def _resample(self):
         for i in range(len(self.vpos)):
             self.vpos[i] = SampledBoundary(self.poly, self.nsrc_schedule["sep"][i], min_dist=0., dx=self.dx)
-        self.mfs.update_boundary(SampledBoundary(self.poly, self.boundsep, min_dist=0., dx=self.dx))
+        self.mfs.update_boundary(SampledBoundary(self.poly, self.boundsep, 
+                                                 min_dist=self.min_dist, dx=self.dx))
 
         nsrc_max = len(self.vpos[-1])
         while nsrc_max > self.mfs.nsrc:
             self.boundsep *= 0.95
-            self.mfs.update_boundary(SampledBoundary(self.poly, self.boundsep, min_dist=0., dx=self.dx))
+            self.mfs.update_boundary(SampledBoundary(self.poly, self.boundsep, 
+                                                     min_dist=self.min_dist, dx=self.dx))
 
     def update_vertices(self, new_vert):
         self.poly.update_vertices(new_vert)

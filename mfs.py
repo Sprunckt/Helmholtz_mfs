@@ -4,7 +4,7 @@ from sklearn.linear_model import Ridge
 from scipy.sparse.linalg import gmres
 from utils import Polygon, ExtrudedPolygon
 import matplotlib.pyplot as plt
-from mayavi import mlab
+#from mayavi import mlab
 
 
 def fundamental_solution(points, sources, k):
@@ -187,7 +187,12 @@ class HelmholtzMFS:
         if solver == "direct":
             res = np.linalg.solve(A, b)
         elif solver == 'lstsq':
-            res = np.linalg.lstsq(A, b, rcond=-1)[0]
+            try:
+                res = np.linalg.lstsq(A, b, rcond=-1)[0]
+            except:
+                print("solve error, freq:", 343*k/np.pi/2)
+                exit(1)
+                
         elif solver == "tsvd":
             res = np.linalg.pinv(A) @ b
         elif solver == "gmres":

@@ -173,13 +173,13 @@ class Simulation:
         for i in range(len(self.vpos)):
             self.vpos[i] = SampledBoundary(self.poly, self.nsrc_schedule["sep"][i], min_dist=0., dx=self.dx)
         self.mfs.update_boundary(SampledBoundary(self.poly, self.boundsep, 
-                                                 min_dist=self.min_dist, dx=self.dx))
+                                                 min_dist=self.min_dist, dx=0))
 
         nsrc_max = len(self.vpos[-1])
         while nsrc_max > self.mfs.nsrc:
             self.boundsep *= 0.95
             self.mfs.update_boundary(SampledBoundary(self.poly, self.boundsep, 
-                                                     min_dist=self.min_dist, dx=self.dx))
+                                                     min_dist=self.min_dist, dx=0))
 
     def update_vertices(self, new_vert):
         self.poly.update_vertices(new_vert)

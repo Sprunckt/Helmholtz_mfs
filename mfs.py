@@ -164,6 +164,8 @@ class HelmholtzMFS:
             assert len(beta) == self.poly.nedges + 2*(self.d - 2), "beta must be a vector of length nedges if d=2, " \
                                                                       "nedges + 2 if d=3"
             self.beta = np.asarray(beta)
+        self.beta_is_callable = callable(beta[0])
+
 
         if ampl is not None:
             self.ampl = ampl
@@ -254,7 +256,12 @@ class HelmholtzMFS:
             res = dirichlet_operator(points, None, alpha[:self.nsrc], pos,
                                      k, fund_wrap=self.fund_wrap, individual_contr=individual_contr)
         elif self.cond == 'robin':
-            beta = self.beta[bound_ids]
+            if self.beta_is_callable:
+                beta_tmp = np.array([beta_fun(k) for beta_fun in self.beta])
+            else:
+                beta_tmp = self.beta
+                
+            beta = beta_tmp[bound_ids]
 
             res = robin_operator(points, normals, alpha[:self.nsrc], pos, k, beta, fund_wrap=self.fund_wrap,
                                  fund_der_wrap=self.fund_der_wrap, individual_contr=individual_contr)

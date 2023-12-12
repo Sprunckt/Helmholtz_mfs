@@ -42,14 +42,14 @@ class Simulation:
             self.d = 3
             self.poly = ExtrudedPolygon(vertices, height)
             if convexify:
-                self.poly_virt = ExtrudedPolygon(ConvexHull(vertices).vertices, height)
+                self.poly_virt = ExtrudedPolygon(vertices[ConvexHull(vertices).vertices], height)
             else:
                 self.poly_virt = self.poly
         else:
             self.d = 2
             self.poly = Polygon(vertices)
             if convexify:
-                self.poly_virt = Polygon(ConvexHull(vertices).vertices)
+                self.poly_virt = Polygon(vertices[ConvexHull(vertices).vertices])
             else:
                 self.poly_virt = self.poly
 
@@ -198,9 +198,9 @@ class Simulation:
         self.poly.update_vertices(new_vert)
         if self.convexify:
             if self.d == 2:
-                self.poly_virt = Polygon(ConvexHull(self.poly.vertices).vertices)
+                self.poly_virt = Polygon(self.poly.vertices[ConvexHull(self.poly.vertices).vertices])
             else: 
-                self.poly_virt = ExtrudedPolygon(ConvexHull(self.poly.vertices).vertices, height)
+                self.poly_virt = ExtrudedPolygon(self.poly.vertices[ConvexHull(self.poly.vertices).vertices], height)
 
         self._resample()
 
@@ -209,9 +209,9 @@ class Simulation:
 
         if self.convexify:
             if self.d == 2:
-                self.poly_virt = Polygon(ConvexHull(self.poly.vertices).vertices)
+                self.poly_virt = Polygon(self.poly.vertices[ConvexHull(self.poly.vertices).vertices])
             else: 
-                self.poly_virt = ExtrudedPolygon(ConvexHull(self.poly.vertices).vertices, height)
+                self.poly_virt = ExtrudedPolygon(self.poly.vertices[ConvexHull(self.poly.vertices).vertices], height)
 
         self._resample()
 

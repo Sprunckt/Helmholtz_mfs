@@ -5,12 +5,13 @@ import multiprocessing as mp
 import time
 from scipy import signal
 from functools import partial
+from scipy.spatial import ConvexHull
 
 
 class Simulation:
     def __init__(self, vertices: np.ndarray, fs: float, nfreq: int, boundsep: float, dx: float, pos_src: np.ndarray,
                  cond='neumann', add_src=15, nsrc_schedule=None, min_dist=0.01, error_sep=None, error_thresh=0.05,
-                 sep_red=0.8, beta=None, height=0.):
+                 sep_red=0.8, beta=None, height=0., convexify=False):
         """
         Simulation class for Helmholtz equation: simulate a source at pos_src in a polygonal domain with boundary
         conditions at different frequencies. Can generate time-domain signals by applying an inverse Fourier transform.
@@ -36,10 +37,22 @@ class Simulation:
         is above the threshold
         """
         self.fs, self.dx = fs, dx
+        self.convexify = convexify
         if height > 0:
+            self.d = 3
             self.poly = ExtrudedPolygon(vertices, height)
+            if convexify:
+                self.poly_virt = ExtrudedPolygon(ConvexHull(vertices).vertices, height)
+            else:
+                self.poly_virt = self.poly
         else:
-            self.poly = Polygon(vertices, origin=np.zeros(2))
+            self.d = 2
+            self.poly = Polygon(vertices)
+            if convexify:
+                self.poly_virt = Polygon(ConvexHull(vertices).vertices)
+            else:
+                self.poly_virt = self.poly
+
         self.freqs = np.linspace(0, fs, nfreq)
         self.wave_numbers = 2 * np.pi * self.freqs / c
         self.nfreqs = len(self.freqs)
@@ -81,7 +94,7 @@ class Simulation:
             if nsrc_schedule["method"] == "per_wavelength":
                 nsrc_schedule["sep"][i] = c / self.freqs[nsrc_schedule["sample_marks"][i]] / \
                                            (nsrc_schedule["nsrc"][i] - 1)
-            vbound = SampledBoundary(self.poly, nsrc_schedule["sep"][i],
+            vbound = SampledBoundary(self.poly_virt, nsrc_schedule["sep"][i],
                                      min_dist=0., sample_type="separation", dx=self.dx)
             self.vpos.append(vbound)
 
@@ -139,7 +152,7 @@ class Simulation:
                 if rel_error > error_thresh:  # resample with more sources
                     nsrc_schedule["sep"][i] = nsrc_schedule["sep"][i] * sep_red
 
-                    self.vpos[i] = SampledBoundary(self.poly, nsrc_schedule["sep"][i],
+                    self.vpos[i] = SampledBoundary(self.poly_virt, nsrc_schedule["sep"][i],
                                                    min_dist=0., sample_type="separation", dx=self.dx)
 
                     print("error {} above threshold, retrying "
@@ -171,7 +184,7 @@ class Simulation:
 
     def _resample(self):
         for i in range(len(self.vpos)):
-            self.vpos[i] = SampledBoundary(self.poly, self.nsrc_schedule["sep"][i], min_dist=0., dx=self.dx)
+            self.vpos[i] = SampledBoundary(self.poly_virt, self.nsrc_schedule["sep"][i], min_dist=0., dx=self.dx)
         self.mfs.update_boundary(SampledBoundary(self.poly, self.boundsep, 
                                                  min_dist=self.min_dist, dx=0))
 
@@ -183,10 +196,23 @@ class Simulation:
 
     def update_vertices(self, new_vert):
         self.poly.update_vertices(new_vert)
+        if self.convexify:
+            if self.d == 2:
+                self.poly_virt = Polygon(ConvexHull(self.poly.vertices).vertices)
+            else: 
+                self.poly_virt = ExtrudedPolygon(ConvexHull(self.poly.vertices).vertices, height)
+
         self._resample()
 
     def update_params(self, new_phi, new_theta):
         self.poly.update_param(new_phi, new_theta)
+
+        if self.convexify:
+            if self.d == 2:
+                self.poly_virt = Polygon(ConvexHull(self.poly.vertices).vertices)
+            else: 
+                self.poly_virt = ExtrudedPolygon(ConvexHull(self.poly.vertices).vertices, height)
+
         self._resample()
 
     def simulate_freq(self, ind):
@@ -200,14 +226,15 @@ class Simulation:
         print("simulating frequency {}; time {} s; {} sources".format(self.freqs[ind], t2-t1, mfs_tmp.nsrc))
         return mfs_tmp.ampl
 
-    def compute_freq(self, compute_points, ind):
+    def compute_freq(self, compute_points, ind, verbose=False):
         """Compute the solution at the given points (shape (npoints, d)) at the given frequency"""
         t1 = time.time()
         mfs_tmp = HelmholtzMFS(room_bound=self.mfs.room_bound, virtual_bound=self.vpos[self.freq_ref[ind]],
                                pos_src=self.mfs.pos_src, poly=self.poly, cond=self.mfs.cond,
                                beta=self.mfs.beta, ampl=self.ampl[ind],
                                add_fun=self.mfs.add_fun)
-        print("computing frequency {}; {} sources".format(self.freqs[ind], mfs_tmp.nsrc))
+        if verbose:
+            print("computing frequency {}; {} sources".format(self.freqs[ind], mfs_tmp.nsrc))
         res = mfs_tmp.evaluate_sol(compute_points, self.wave_numbers[ind])
         t2 = time.time()
         print("time {} s".format(t2 - t1))

@@ -1,6 +1,6 @@
 import numpy as np
 from mfs import HelmholtzMFS, SampledBoundary
-from utils import Polygon, c, ExtrudedPolygon
+from utils import Polygon, c, ExtrudedPolygon, in_polygon
 import multiprocessing as mp
 import time
 from scipy import signal
@@ -11,7 +11,7 @@ from scipy.spatial import ConvexHull
 class Simulation:
     def __init__(self, vertices: np.ndarray, fs: float, nfreq: int, boundsep: float, dx: float, pos_src: np.ndarray,
                  cond='neumann', add_src=15, nsrc_schedule=None, min_dist=0.01, error_sep=None, error_thresh=0.05,
-                 sep_red=0.8, beta=None, height=0., convexify=False):
+                 sep_red=0.8, beta=None, height=0., poly_virt=None, convexify=False):
         """
         Simulation class for Helmholtz equation: simulate a source at pos_src in a polygonal domain with boundary
         conditions at different frequencies. Can generate time-domain signals by applying an inverse Fourier transform.
@@ -41,14 +41,18 @@ class Simulation:
         if height > 0:
             self.d = 3
             self.poly = ExtrudedPolygon(vertices, height)
-            if convexify:
+            if poly_virt is not None:
+                self.poly_virt = poly_virt
+            elif convexify:
                 self.poly_virt = ExtrudedPolygon(vertices[ConvexHull(vertices).vertices], height)
             else:
                 self.poly_virt = self.poly
         else:
             self.d = 2
             self.poly = Polygon(vertices)
-            if convexify:
+            if poly_virt is not None:
+                self.poly_virt = poly_virt
+            elif convexify:
                 self.poly_virt = Polygon(vertices[ConvexHull(vertices).vertices])
             else:
                 self.poly_virt = self.poly
@@ -194,20 +198,24 @@ class Simulation:
             self.mfs.update_boundary(SampledBoundary(self.poly, self.boundsep, 
                                                      min_dist=self.min_dist, dx=0))
 
-    def update_vertices(self, new_vert):
+    def update_vertices(self, new_vert, new_virt_vert=None):
         self.poly.update_vertices(new_vert)
-        if self.convexify:
+        if new_virt_vert is not None:
+            self.poly_virt.update_vertices(new_virt_vert)
+        elif self.convexify:
             if self.d == 2:
                 self.poly_virt = Polygon(self.poly.vertices[ConvexHull(self.poly.vertices).vertices])
             else: 
-                self.poly_virt = ExtrudedPolygon(self.poly.vertices[ConvexHull(self.poly.vertices).vertices], height)
+                self.poly_virt = ExtrudedPolygon(self.poly.vertices[ConvexHull(self.poly.vertices).vertices], self.height)
 
         self._resample()
 
-    def update_params(self, new_phi, new_theta):
+    def update_params(self, new_phi, new_theta, new_phi_virt=None, new_theta_virt=None):
         self.poly.update_param(new_phi, new_theta)
 
-        if self.convexify:
+        if new_phi_virt is not None:
+            self.poly_virt = self.poly_virt.update_param(new_phi_virt, new_theta_virt)
+        elif self.convexify:
             if self.d == 2:
                 self.poly_virt = Polygon(self.poly.vertices[ConvexHull(self.poly.vertices).vertices])
             else: 
@@ -261,14 +269,17 @@ class Simulation:
 
         print("total simulation time : {} s".format(time.time()-t1))
 
-    def compute(self, compute_points, nworkers=1, tol=0.):
+    def compute(self, compute_points, nworkers=1, tol=0., non_conv=False):
         """Compute the solution at the given points (shape (npoints, d)) at all frequencies, returns a tuple
         (res, is_in) of arrays of shape (npoints, nfreqs) and (npoints,) respectively, where is_in is True if the
         corresponding point is inside the domain, False otherwise and res contains the scalar solution at each compute
         point and frequency."""
 
         t1 = time.time()
-        in_mask = self.poly.is_in(compute_points, min_dist=tol)
+        if non_conv:
+            in_mask = in_polygon(compute_points, self.poly.vertices)
+        else:
+            in_mask = self.poly.is_in(compute_points, min_dist=tol)
 
         res_tot = np.full([len(compute_points), self.nfreqs], np.nan, dtype=np.complex128)
         res_tot[in_mask, 0] = 0.  # 0 frequency

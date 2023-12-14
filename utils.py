@@ -46,7 +46,14 @@ def out_polygon(points, vertices, min_dist=0.0):
         outside[i] = (not poly.contains(pp)) and (poly.distance(pp) > min_dist)
     return outside
 
-
+def in_polygon(points, vertices):
+    poly = ShapelyPolygon(vertices)
+    inside = np.zeros(points.shape[0], dtype=bool)
+    for i, p in enumerate(points):
+        pp = ShapelyPoint(p)
+        inside[i] = poly.contains(pp)
+    return inside 
+    
 def plot_boundary(bound, norm_vec, boundv, pos_src):
     plt.plot(bound[:, 0], bound[:, 1], '.-', label='boundary')
     plt.quiver(bound[:, 0], bound[:, 1], norm_vec[:, 0], norm_vec[:, 1])

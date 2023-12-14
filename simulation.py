@@ -291,7 +291,7 @@ class Simulation:
         if nworkers == 1:
             res = np.zeros([npoints, self.nfreqs - 1], dtype=np.complex128)
             for i in range(1, self.nfreqs):
-                res[:, i] = self.compute_freq(to_compute, i)
+                res[:, i-1] = self.compute_freq(to_compute, i)
         else:
             if nworkers < 0:
                 # use all available cores

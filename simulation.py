@@ -193,7 +193,7 @@ class Simulation:
                                                  min_dist=self.min_dist, dx=0))
 
         nsrc_max = len(self.vpos[-1])
-        while nsrc_max > self.mfs.nsrc:
+        while nsrc_max > self.mfs.nbound:
             self.boundsep *= 0.95
             self.mfs.update_boundary(SampledBoundary(self.poly, self.boundsep, 
                                                      min_dist=self.min_dist, dx=0))

@@ -344,7 +344,59 @@ class ExtrudedPolygon(Polygon):
         return res
 
 
-def mod2pi(angle, lbound=-2.):
+class Cuboid(Polygon):
+    def __init__(self, lx, ly, lz):
+        self.lx, self.ly, self.lz = lx, ly, lz
+
+        vertices = np.array([[-lx / 2, -ly / 2, -lz / 2], [lx / 2, -ly / 2, -lz / 2],
+                                  [lx / 2, ly / 2, -lz / 2], [-lx / 2, ly / 2, -lz / 2],
+                                  [-lx / 2, -ly / 2, lz / 2], [lx / 2, -ly / 2, lz / 2],
+                                  [lx / 2, ly / 2, lz / 2], [-lx / 2, ly / 2, lz / 2]])
+
+        super().__init__(vertices[:4, :2])
+
+        self.vertices = vertices
+        self.normals = np.array([[0, 0, -1], [1, 0, 0], [0, 1, 0], [-1, 0, 0], [0, -1, 0], [0, 0, 1]])
+        self.nedges = 4  # for compatibility with ExtrudedPolygon
+
+    def sample(self, param, distribution='chebyshev', min_dist=0.01, sample_type="total", return_nodes=False):
+        # param is a 3-tuple giving the number of points in each direction
+
+        if sample_type == "separation":
+            # compute the corresponding number of points for each direction
+            param = (int(np.ceil(self.lx / param)),
+                     int(np.ceil(self.ly / param)),
+                     int(np.ceil(self.lz / param)))
+        nodesx = -self.lx/2 + self.lx*chebyshev_nodes(0, 1, param[0])
+        nodesy = -self.ly/2 + self.ly*chebyshev_nodes(0, 1, param[1])
+        nodesz = -self.lz/2 + self.lz*chebyshev_nodes(0, 1, param[2])
+
+        # first vertical face
+        nodesxy = np.stack(np.meshgrid(nodesx, nodesy), axis=-1).reshape(-1, 2)
+        nodesyz = np.stack(np.meshgrid(nodesy, nodesz), axis=-1).reshape(-1, 2)
+        nodesxz = np.stack(np.meshgrid(nodesx, nodesz), axis=-1).reshape(-1, 2)
+
+        boundary = [np.zeros([len(nodesxz), 3]), np.zeros([len(nodesyz), 3]), np.zeros([len(nodesxz), 3]),
+                    np.zeros([len(nodesyz), 3]), np.zeros([len(nodesxy), 3]), np.zeros([len(nodesxy), 3])]
+        boundary[0][:, 1], boundary[0][:, 0], boundary[0][:, 2] = -self.ly/2, nodesxz[:, 0], nodesxz[:, 1]
+        boundary[1][:, 0], boundary[1][:, 1], boundary[1][:, 2] = self.lx/2, nodesyz[:, 0], nodesyz[:, 1]
+        boundary[2][:, 1], boundary[2][:, 0], boundary[2][:, 2] = self.ly/2, nodesxz[:, 0], nodesxz[:, 1]
+        boundary[3][:, 0], boundary[3][:, 1], boundary[3][:, 2] = -self.lx/2, nodesyz[:, 0], nodesyz[:, 1]
+        boundary[4][:, :2], boundary[4][:, 2] = nodesxy, -self.lz/2
+        boundary[5][:, :2], boundary[5][:, 2] = nodesxy, self.lz/2
+
+        bound_ids = [np.full(len(boundary[i]), i) for i in range(6)]
+        normals = [np.zeros([len(boundary[i]), 3]) for i in range(6)]
+        normals[0][:, 1], normals[2][:, 1] = -1, 1
+        normals[1][:, 0], normals[3][:, 0] = 1, -1
+        normals[4][:, 2], normals[5][:, 2] = -1, 1
+        bound_ids, boundary, normals = np.concatenate(bound_ids), np.concatenate(boundary), np.concatenate(normals)
+
+        print(len(boundary), len(bound_ids), len(normals))
+        return boundary, normals, bound_ids
+
+
+def mod2pi(angle, lbound=-0.156464):
     """Return angle modulo 2*pi"""
     return (angle - lbound) % (2 * np.pi) + lbound
 

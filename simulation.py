@@ -1,6 +1,6 @@
 import numpy as np
 from mfs import HelmholtzMFS, SampledBoundary
-from utils import Polygon, c, ExtrudedPolygon, in_polygon
+from utils import Polygon, c, ExtrudedPolygon, in_polygon, Cuboid
 import multiprocessing as mp
 import time
 from scipy import signal
@@ -38,14 +38,18 @@ class Simulation:
         """
         self.fs, self.dx = fs, dx
         self.convexify = convexify
-        if height > 0:
+        if height > 0 or np.asarray(vertices).shape == (3,):
             self.d = 3
-            self.poly = ExtrudedPolygon(vertices, height)
-            if poly_virt is not None:
-                self.poly_virt = poly_virt
-            elif convexify:
-                self.poly_virt = ExtrudedPolygon(vertices[ConvexHull(vertices).vertices], height)
-            else:
+            if height > 0:
+                self.poly = ExtrudedPolygon(vertices, height)
+                if poly_virt is not None:
+                    self.poly_virt = poly_virt
+                elif convexify:
+                    self.poly_virt = ExtrudedPolygon(vertices[ConvexHull(vertices).vertices], height)
+                else:
+                    self.poly_virt = self.poly
+            else: # cuboid
+                self.poly = Cuboid(*vertices)
                 self.poly_virt = self.poly
         else:
             self.d = 2
@@ -219,9 +223,13 @@ class Simulation:
             if self.d == 2:
                 self.poly_virt = Polygon(self.poly.vertices[ConvexHull(self.poly.vertices).vertices])
             else: 
-                self.poly_virt = ExtrudedPolygon(self.poly.vertices[ConvexHull(self.poly.vertices).vertices], height)
+                self.poly_virt = ExtrudedPolygon(self.poly.vertices[ConvexHull(self.poly.vertices).vertices],
+                                                 self.poly.height)
 
         self._resample()
+
+    def update_source_term(self, new_pos_src):
+        self.mfs.update_source_term(new_pos_src)
 
     def simulate_freq(self, ind):
         t1 = time.time()

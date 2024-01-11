@@ -2,7 +2,7 @@ import numpy as np
 from scipy.special import hankel1, jv
 from sklearn.linear_model import Ridge
 from scipy.sparse.linalg import gmres
-from utils import Polygon, ExtrudedPolygon
+from utils import Polygon, ExtrudedPolygon, Cuboid
 import matplotlib.pyplot as plt
 #from mayavi import mlab
 
@@ -136,7 +136,7 @@ class HelmholtzMFS:
             src_ampl: amplitudes of the impulsive sources (shape (pos_src.shape[0],))
         """
 
-        if isinstance(poly, ExtrudedPolygon):
+        if isinstance(poly, ExtrudedPolygon) or isinstance(poly, Cuboid):
             self.d, self.fund_wrap, self.fund_der_wrap = 3, fundamental_solution3d, fundamental_solution_derivative3d
             self.particular_wrap, self.particular_der_wrap = particular_solution, particular_solution_gradient3d
         elif isinstance(poly, Polygon):
@@ -414,6 +414,9 @@ class HelmholtzMFS:
     def update_sources(self, new_vbound):
         self.virtual_bound = new_vbound
         self.nsrc = len(self.virtual_bound)
+
+    def update_source_term(self, new_pos):
+        self.pos_src = new_pos
 
     def update_boundary(self, new_bound):
         self.room_bound = new_bound

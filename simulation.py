@@ -76,8 +76,7 @@ class Simulation:
             freq_marks = np.array([100.])
             nsrc = np.array([10, 3.])
             nsrc[0], nsrc[1:] = 10, 3
-            nsrc_schedule = dict(freq_marks=freq_marks, method='per_wavelength',
-                                 nsrc=nsrc, max_relative_error=1e-3)
+            nsrc_schedule = dict(freq_marks=freq_marks, method='per_wavelength', nsrc=nsrc)
 
         # generate sample_marks from freq_marks, ie indices of frequencies where to sample
         if nsrc_schedule.get("sample_marks") is None:
@@ -146,7 +145,7 @@ class Simulation:
             if i > 0 and nsrc_schedule["sep"][i] > nsrc_schedule["sep"][i-1]:  # separation should decrease
                 nsrc_schedule["sep"][i] = nsrc_schedule["sep"][i-1]
 
-                self.vpos[i] = self.vpos[i-1]
+                self.vpos[i] = self.vpos[i-1].copy()
             t1 = time.time()
             while rel_error > error_thresh and max_tries > 0:
                 max_tries -= 1
@@ -171,10 +170,12 @@ class Simulation:
                         boundsep = nsrc_schedule["sep"][i]*0.95
                         print("error above threshold, clipping boundary separation to minimal source separation")
                         self.mfs.update_boundary(SampledBoundary(self.poly, boundsep, min_dist=min_dist,
-                                                                 sample_type="separation", dx=self.dx))
+                                                                 sample_type="separation"))
                         if error_sep > boundsep:
-                            error_sep = boundsep * 0.9
-                            print("error_sep is larger than boundsep, clipping")
+                            error_sep = boundsep * 0.95
+                            error_points, _, error_ids = self.poly.sample(error_sep, sample_type="separation", min_dist=min_dist)
+
+                            print("error_sep is larger than boundsep, clipping ; {} points".format(len(error_points)))
 
             if max_tries == 0:
                 print("error threshold not reached, simulation might be inaccurate")

@@ -348,15 +348,17 @@ class Cuboid(Polygon):
     def __init__(self, lx, ly, lz):
         self.lx, self.ly, self.lz = lx, ly, lz
 
-        vertices = np.array([[-lx / 2, -ly / 2, -lz / 2], [lx / 2, -ly / 2, -lz / 2],
-                                  [lx / 2, ly / 2, -lz / 2], [-lx / 2, ly / 2, -lz / 2],
-                                  [-lx / 2, -ly / 2, lz / 2], [lx / 2, -ly / 2, lz / 2],
-                                  [lx / 2, ly / 2, lz / 2], [-lx / 2, ly / 2, lz / 2]])
+        vertices = np.array([[0., 0, 0], [lx, 0, 0], [lx, ly, 0], [0, ly, 0],
+                             [0, 0, lz], [lx, 0, lz], [lx, ly, lz], [0, ly, lz]])
 
         super().__init__(vertices[:4, :2])
 
         self.vertices = vertices
-        self.normals = np.array([[0, 0, -1], [1, 0, 0], [0, 1, 0], [-1, 0, 0], [0, -1, 0], [0, 0, 1]])
+        normals = np.zeros((6, 3))
+        normals[:4, :2] = self.normals.copy()
+        normals[4, 2], normals[5, 2] = -1., 1.  # bottom and top normals
+        self.normals = normals
+        # self.normals = np.array([[0, 0, -1], [1, 0, 0], [0, 1, 0], [-1, 0, 0], [0, -1, 0], [0, 0, 1]])
         self.nedges = 4  # for compatibility with ExtrudedPolygon
 
     def sample(self, param, distribution='chebyshev', min_dist=0.01, sample_type="total", return_nodes=False):
@@ -367,9 +369,9 @@ class Cuboid(Polygon):
             param = (int(np.ceil(self.lx / param)),
                      int(np.ceil(self.ly / param)),
                      int(np.ceil(self.lz / param)))
-        nodesx = -self.lx/2 + self.lx*chebyshev_nodes(0, 1, param[0])
-        nodesy = -self.ly/2 + self.ly*chebyshev_nodes(0, 1, param[1])
-        nodesz = -self.lz/2 + self.lz*chebyshev_nodes(0, 1, param[2])
+        nodesx = chebyshev_nodes(0, self.lx, param[0])
+        nodesy = chebyshev_nodes(0, self.ly, param[1])
+        nodesz = chebyshev_nodes(0, self.lz, param[2])
 
         # first vertical face
         nodesxy = np.stack(np.meshgrid(nodesx, nodesy), axis=-1).reshape(-1, 2)
@@ -378,12 +380,12 @@ class Cuboid(Polygon):
 
         boundary = [np.zeros([len(nodesxz), 3]), np.zeros([len(nodesyz), 3]), np.zeros([len(nodesxz), 3]),
                     np.zeros([len(nodesyz), 3]), np.zeros([len(nodesxy), 3]), np.zeros([len(nodesxy), 3])]
-        boundary[0][:, 1], boundary[0][:, 0], boundary[0][:, 2] = -self.ly/2, nodesxz[:, 0], nodesxz[:, 1]
-        boundary[1][:, 0], boundary[1][:, 1], boundary[1][:, 2] = self.lx/2, nodesyz[:, 0], nodesyz[:, 1]
-        boundary[2][:, 1], boundary[2][:, 0], boundary[2][:, 2] = self.ly/2, nodesxz[:, 0], nodesxz[:, 1]
-        boundary[3][:, 0], boundary[3][:, 1], boundary[3][:, 2] = -self.lx/2, nodesyz[:, 0], nodesyz[:, 1]
-        boundary[4][:, :2], boundary[4][:, 2] = nodesxy, -self.lz/2
-        boundary[5][:, :2], boundary[5][:, 2] = nodesxy, self.lz/2
+        boundary[0][:, 1], boundary[0][:, 0], boundary[0][:, 2] = 0, nodesxz[:, 0], nodesxz[:, 1]
+        boundary[1][:, 0], boundary[1][:, 1], boundary[1][:, 2] = self.lx, nodesyz[:, 0], nodesyz[:, 1]
+        boundary[2][:, 1], boundary[2][:, 0], boundary[2][:, 2] = self.ly, nodesxz[:, 0], nodesxz[:, 1]
+        boundary[3][:, 0], boundary[3][:, 1], boundary[3][:, 2] = 0, nodesyz[:, 0], nodesyz[:, 1]
+        boundary[4][:, :2], boundary[4][:, 2] = nodesxy, 0
+        boundary[5][:, :2], boundary[5][:, 2] = nodesxy, self.lz
 
         bound_ids = [np.full(len(boundary[i]), i) for i in range(6)]
         normals = [np.zeros([len(boundary[i]), 3]) for i in range(6)]
@@ -395,6 +397,11 @@ class Cuboid(Polygon):
         print(len(boundary), len(bound_ids), len(normals))
         return boundary, normals, bound_ids
 
+    def is_in(self, points, min_dist=0):
+        return ((min_dist <= points[:, 0]) & (self.lx - min_dist >= points[:, 0]) &
+                (min_dist <= points[:, 1]) & (self.ly - min_dist >= points[:, 1]) &
+                (min_dist <= points[:, 2]) & (self.lz - min_dist >= points[:, 2]))
+                
 
 def mod2pi(angle, lbound=-0.156464):
     """Return angle modulo 2*pi"""

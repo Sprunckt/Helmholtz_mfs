@@ -18,6 +18,12 @@ def fundamental_solution_derivative(dist, k):
     return -(1j/4) * k * hankel1(1, k*dist)
 
 
+def fundamental_solution_derivative2(dist, k):
+    """Compute the second order derivative of the fundamental solution at the points given the distances,
+    return a matrix of shape npoints, nsources."""
+    return (1j/8) * k**2 * (hankel1(2, k*dist) - hankel1(0, k*dist))
+
+
 def fundamental_solution3d(points, sources, k):
     """Compute the fundamental solution at the points given the sources, return a matrix of shape npoints, nsources."""
     norms = np.linalg.norm(points[:, np.newaxis, :] - sources[np.newaxis, :, :], axis=-1)
@@ -45,6 +51,17 @@ def particular_solution_gradient(dist, theta, k, mu, polar_offset):
 
     ctheta, stheta = np.cos(theta + polar_offset), np.sin(theta + polar_offset)
     return np.stack([dr*ctheta - stheta*dtheta/dist, dr*stheta + ctheta*dtheta/dist], axis=-1)
+
+
+def particular_solution_tangential_gradient(k, mu, angles, edges):
+    """Compute the limit of the gradient of the particular solution at a vertex given the angles at the vertices.
+    Return an array of shape (nedges, 2, 2) (res[i][j] is the gradient of the particular solution at the vertex i, j=0
+    for the left edge, j=1 for the right edge)."""
+    der = k*(jv(mu-1, 0.))  # in case mu=1, otherwise = 0
+    res = np.zeros((len(edges), 2, 2))
+    res[:, 0, :] = - np.roll(edges, 1, axis=0) * np.reshape(der*np.cos(mu*angles), [-1, 1]) / 2.
+    res[:, 1, :] = edges * np.reshape(der, [-1, 1]) / 2.
+    return res
 
 
 def particular_solution_gradient3d(dist, theta, k, mu, polar_offset):
@@ -120,6 +137,11 @@ class SampledBoundary:
     def __len__(self):
         return len(self.bound)
 
+    def copy(self):
+        return SampledBoundary(Polygon(np.array([[0., 0.], [1., 0.], [1., 1.], [0., 1.]])),
+                               [self.bound.copy(), self.normvec.copy(), self.bound_ids.copy()],
+                               sample_type='no_resample')
+
 
 class HelmholtzMFS:
     def __init__(self, room_bound: SampledBoundary, virtual_bound: SampledBoundary, pos_src: np.ndarray, poly: Polygon,
@@ -166,7 +188,6 @@ class HelmholtzMFS:
             self.beta = np.asarray(beta)
         self.beta_is_callable = callable(beta[0])
 
-
         if ampl is not None:
             self.ampl = ampl
         else:
@@ -184,7 +205,7 @@ class HelmholtzMFS:
                                          individual_contr=True)
 
         b[:] = - np.reshape(self.boundary_operator(self.room_bound.bound, self.room_bound.bound_ids,
-                                                   k, use_src=True), [-1, 1])
+                                                   k, use_src=True, individual_contr=False), [-1, 1])
 
         if solver == "direct":
             res = np.linalg.solve(A, b)
@@ -223,9 +244,10 @@ class HelmholtzMFS:
             raise ValueError("Unknown stat")
         return self.ampl, stat
 
-    def evaluate_sol(self, points, k):
+    def evaluate_sol(self, points, k, use_src=True):
         res = np.sum(self.fund_wrap(points, self.virtual_bound.bound, k) * self.ampl[:self.nsrc].reshape(1, -1), axis=1)
-        res += np.sum(self.fund_wrap(points, self.pos_src*self.src_ampl.reshape(1, -1), k), axis=1)
+        if use_src:
+            res += np.sum(self.fund_wrap(points, self.pos_src, k)*self.src_ampl.reshape(1, -1), axis=1)
 
         if self.add_fun > 0:
             angles, diffs, norms = self.poly.compute_angles(points)
@@ -239,23 +261,92 @@ class HelmholtzMFS:
 
         return res
 
-    def boundary_operator(self, points, bound_ids, k, use_src=False, individual_contr=False):
+    def evaluate_grad(self, points, k, use_src=True):
+        diffs = points[:, np.newaxis, :] - self.virtual_bound.bound[np.newaxis, :, :]  # (np, npv, 2)
+        norms = np.linalg.norm(diffs, axis=-1)  # (np, npv)
+
+        grad = np.sum(self.fund_der_wrap(norms, k)[:, :, np.newaxis]*diffs/norms[:, :, np.newaxis] *
+                      self.ampl[:self.nsrc][np.newaxis, :, np.newaxis], axis=1)  # (np, 2)
+        if use_src:  # add source contribution
+            diffs = points[:, np.newaxis, :] - self.pos_src[np.newaxis, :, :]  # (np, nsrc, 2)
+            norms = np.linalg.norm(diffs, axis=-1)  # (np, nsrc)
+            grad += np.sum(self.fund_der_wrap(norms, k)[:, :, np.newaxis]*diffs/norms[:, :, np.newaxis] *
+                           self.src_ampl[np.newaxis, :, np.newaxis], axis=1)
+
+        if self.add_fun > 0:
+            angles, diffs, norms = self.poly.compute_angles(points)
+
+            indstart, indstop = self.nsrc, self.nsrc + self.poly.nedges
+            for t in range(self.add_fun):
+                grad += np.sum(self.particular_der_wrap(norms, angles, k, t*self.factor, self.poly.polar_angles) *
+                               self.ampl[indstart:indstop][np.newaxis, :, np.newaxis], axis=1)
+
+                indstart, indstop = indstop, indstop + self.poly.nedges
+
+        return grad
+
+    def evaluate_corner_der(self, k, use_src=True):
+        """Return the gradient of the solution at each corner, take limit for particular solutions"""
+        nder = np.zeros([self.poly.nedges, 2, 2], dtype=np.complex128)  # one dimension is repeated if no particular sol
+
+        if self.add_fun > 0:  # add limit of the particular solution gradient on each edge for each vertex
+            for t in range(self.add_fun):
+                nder[:, :, :] += (particular_solution_tangential_gradient(k, self.factor*t, self.poly.polar_angles,
+                                                                          self.poly.edges) *
+                                  self.ampl[self.nsrc + t*self.poly.nedges:self.nsrc + (t+1)*self.poly.nedges,
+                                            np.newaxis, np.newaxis])
+        recentered_int = np.arange(self.poly.nedges)
+        trunc_recentered = np.arange(self.poly.nedges - 1)
+        for i in range(self.poly.nedges):
+            diffs = self.poly.vertices[i][np.newaxis, :] - self.virtual_bound.bound  # (npv, 2)
+            norms = np.linalg.norm(diffs, axis=-1)  # (npv,)
+
+            nder[i] += np.sum(self.fund_der_wrap(norms, k)[:, np.newaxis] * diffs /
+                              norms[:, np.newaxis] * self.ampl[:self.nsrc, np.newaxis], axis=0)[np.newaxis, :]
+
+            if use_src:  # add source contribution
+                diffs = self.poly.vertices[i][np.newaxis, :] - self.pos_src  # (nsrc, 2)
+                norms = np.linalg.norm(diffs, axis=-1)  # (nsrc,)
+                nder[i] += np.sum(self.fund_der_wrap(norms, k)[:, np.newaxis] * diffs /
+                                  norms[:, np.newaxis] * self.src_ampl[:, np.newaxis], axis=0)[np.newaxis, :]
+
+            if self.add_fun > 0:
+                # extract indices of the particular solutions that are not at the corner i
+
+                trunc_recentered[:i], trunc_recentered[i:] = recentered_int[:i], recentered_int[i+1:]
+                angles, diffs, norms = self.poly.compute_angles(self.poly.vertices[i][np.newaxis, :])
+                factor = self.factor[:, trunc_recentered]
+                for t in range(self.add_fun):  # todo: clean and check this
+                    # nder[i] += np.sum(self.particular_der_wrap(norms[:, recentered_int], angles[:, recentered_int],
+                    #                                            k, t*factor, self.poly.polar_angles[recentered_int])[0] *
+                    #                   self.ampl[interval][:, np.newaxis]*self.poly.normals[i][np.newaxis, :])
+                    # regular part of the gradient at the vertex (i.e. emanating from other vertices)
+                    nder[i] += np.sum(self.particular_der_wrap(norms[:, trunc_recentered], angles[:, trunc_recentered],
+                                                               k, t * factor,
+                                                               self.poly.polar_angles[trunc_recentered])[0] *
+                                      self.ampl[trunc_recentered + (self.nsrc + t*self.poly.nedges), np.newaxis],
+                                      axis=0)[np.newaxis, :]
+        return nder
+
+    def boundary_operator(self, points, bound_ids, k, use_src=False, individual_contr=False, cond=None):
         normals = self.poly.get_normal(bound_ids)
+        if cond is None:
+            cond = self.cond
 
         if use_src:
             pos = self.pos_src
             alpha = self.src_ampl
         else:
-            alpha = self.ampl
+            alpha = self.ampl[:self.nsrc]
             pos = self.virtual_bound.bound
 
-        if self.cond == 'neumann':
-            res = neumann_operator(points, normals, alpha[:self.nsrc], pos,
+        if cond == 'neumann':
+            res = neumann_operator(points, normals, alpha, pos,
                                    k, fund_der_wrap=self.fund_der_wrap, individual_contr=individual_contr)
-        elif self.cond == 'dirichlet':
-            res = dirichlet_operator(points, None, alpha[:self.nsrc], pos,
+        elif cond == 'dirichlet':
+            res = dirichlet_operator(points, None, alpha, pos,
                                      k, fund_wrap=self.fund_wrap, individual_contr=individual_contr)
-        elif self.cond == 'robin':
+        elif cond == 'robin':
             if self.beta_is_callable:
                 beta_tmp = np.array([beta_fun(k) for beta_fun in self.beta])
             else:
@@ -263,7 +354,7 @@ class HelmholtzMFS:
                 
             beta = beta_tmp[bound_ids]
 
-            res = robin_operator(points, normals, alpha[:self.nsrc], pos, k, beta, fund_wrap=self.fund_wrap,
+            res = robin_operator(points, normals, alpha, pos, k, beta, fund_wrap=self.fund_wrap,
                                  fund_der_wrap=self.fund_der_wrap, individual_contr=individual_contr)
 
         else:
@@ -421,3 +512,21 @@ class HelmholtzMFS:
     def update_boundary(self, new_bound):
         self.room_bound = new_bound
         self.nbound = len(self.room_bound)
+
+
+def compute_hessian2d(points, k, src_pos):
+    """Compute the hessian for the given points at a single source position (shape (1, 2)) at a wavenumber k.
+     Return a matrix of shape (npoints, 2, 2)."""
+    diffs = points[:, np.newaxis, :] - src_pos[np.newaxis, :, :]
+    norms = np.linalg.norm(diffs, axis=-1)
+    hess = np.zeros((len(points), 2, 2), dtype=complex)
+    hess[:, 0, 0] = np.reshape(fundamental_solution_derivative2(norms, k) * diffs[:, :, 0] ** 2 / norms ** 2 +
+                               (1/norms - diffs[:, :, 0]**2/norms**3) * fundamental_solution_derivative(norms, k), -1)
+    hess[:, 1, 1] = np.reshape(fundamental_solution_derivative2(norms, k) * diffs[:, :, 1] ** 2 / norms ** 2 +
+                               (1/norms - diffs[:, :, 1]**2/norms**3) * fundamental_solution_derivative(norms, k), -1)
+    hess[:, 0, 1] = np.reshape(diffs[:, :, 0] * diffs[:, :, 1] * (fundamental_solution_derivative2(norms, k)/norms**2 -
+                               fundamental_solution_derivative(norms, k)/norms**3), -1)
+    hess[:, 1, 0] = hess[:, 0, 1]
+
+    return hess
+

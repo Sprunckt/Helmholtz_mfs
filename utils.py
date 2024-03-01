@@ -175,7 +175,8 @@ class Polygon:
         norms = np.linalg.norm(diffs, axis=2)
 
         # shape (npoints, nvertices)
-        angles = mod2pi(mod2pi(np.arctan2(diffs[:, :, 1], diffs[:, :, 0])) - self.polar_angles[np.newaxis, :])
+        angles = mod2pi(np.arctan2(np.abs(diffs[:, :, 0]*self.edges[:, 1] - diffs[:, :, 1]*self.edges[:, 0]),
+                                   diffs[:, :, 0]*self.edges[:, 0] + diffs[:, :, 1]*self.edges[:, 1]))
 
         return angles, diffs, norms
 
@@ -214,7 +215,7 @@ class Polygon:
 
         intersections = np.concatenate(intersections, axis=0)
 
-        self.vertices = intersections[self.is_in(intersections, tol=1e-6)]#intersections[ConvexHull(intersections).vertices]
+        self.vertices = intersections[self.is_in(intersections, 1e-6)]
 
         self.update_vertices(self.vertices, sort=True)
 
@@ -229,7 +230,6 @@ class Polygon:
             self.sort_vertices()
         if len(self.vertices) < 3:
             raise ValueError("Number of vertices should exceed 2")
-
         self._update_edges_and_angles()
         self.lengths = np.linalg.norm(self.edges, axis=1)  # length of each edge
         self.normals = np.stack([self.edges[:, 1], -self.edges[:, 0]], axis=1)
@@ -246,12 +246,12 @@ class Polygon:
 
         self.theta = mod2pi(self.polar_angles - np.pi / 2)  # angles parametrizing the normals
 
-    def is_in(self, points, min_dist=0, tol=1e-6):
+    def is_in(self, points, min_dist=0.):
         """Return an array of booleans indicating whether each point is inside the (convex) polygon."""
         # compute scalar products between each outward normal and the vector from the origin to the point
         return np.all(np.sum((np.reshape(points, (-1, 2)) - self.origin)[:, np.newaxis, :] *
                              self.normals[np.newaxis, :, :], axis=2)
-                      <= self.phi[np.newaxis, :] - min_dist + tol, axis=1)
+                      <= self.phi[np.newaxis, :] - min_dist, axis=1)
 
     def plot(self):
         plt.plot(self.vertices[:, 0], self.vertices[:, 1], 'x')
@@ -394,18 +394,17 @@ class Cuboid(Polygon):
         normals[4][:, 2], normals[5][:, 2] = -1, 1
         bound_ids, boundary, normals = np.concatenate(bound_ids), np.concatenate(boundary), np.concatenate(normals)
 
-        print(len(boundary), len(bound_ids), len(normals))
         return boundary, normals, bound_ids
 
-    def is_in(self, points, min_dist=0):
-        return ((min_dist <= points[:, 0]) & (self.lx - min_dist >= points[:, 0]) &
-                (min_dist <= points[:, 1]) & (self.ly - min_dist >= points[:, 1]) &
-                (min_dist <= points[:, 2]) & (self.lz - min_dist >= points[:, 2]))
-                
+    def is_in(self, points, tol=0.):
+        return ((tol <= points[:, 0]) & (self.lx - tol >= points[:, 0]) &
+                (tol <= points[:, 1]) & (self.ly - tol >= points[:, 1]) &
+                (tol <= points[:, 2]) & (self.lz - tol >= points[:, 2]))
 
-def mod2pi(angle, lbound=-0.156464):
+
+def mod2pi(angle):
     """Return angle modulo 2*pi"""
-    return (angle - lbound) % (2 * np.pi) + lbound
+    return np.where(angle < 0, angle + 2*np.pi, angle)
 
 
 def gmsh_sampling(vertices, mesh_size):

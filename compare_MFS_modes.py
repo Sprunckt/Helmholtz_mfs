@@ -21,7 +21,7 @@ beta = 0.006378610727567917+0.009574047932848483j
 exact_path = "data/"
 
 
-if test_type in ["comsol_polygon", "distance_polygon", "sliding_polygon", "eigen_frequencies", "mean_border_error"]:
+if test_type in ["comsol_polygon", "distance_polygon", "sliding_polygon", "mean_border_error"]:
     vertices = np.array([[2.2, 0], [4.3, 0.], [5.7, 1.9], [3.3, 5.1], [1.7, 5.5], [-0.75, 2.75]])
     pos_src = np.array([[1, 2.5]])
 else:
@@ -371,30 +371,43 @@ if test_type == "distance_polygon":
 
 elif test_type == "eigen_frequencies":
     # plot the determinant of the homogeneous system for different frequencies
-    min_freqr, max_freqr, nfreqr = 99.75, 100, 300
+    min_freqr, max_freqr, nfreqr = 50, 90, 500
     min_freqi, max_freqi, nfreqi = 0, 10, 25
 
-    k = 2 * np.pi * 100 / c
     det_vals = []
     room_bound = SampledBoundary(poly, 200, distribution=distribution,
-                                 min_dist=0.01, sample_type='total')
-    virtual_bound = SampledBoundary(poly, 200, dx=dx,
+                                 min_dist=0.001, sample_type='total')
+    virtual_bound = SampledBoundary(poly, 150, dx=dx,
                                     distribution=distribution, min_dist=0.00, sample_type='total')
     smfs = HelmholtzMFS(room_bound=room_bound, virtual_bound=virtual_bound, pos_src=pos_src, poly=poly,
                         cond=bound_cond, beta=[beta for _ in range(len(vertices))], add_fun=0)
 
     if bound_cond in ["neumann", "dirichlet"]:
         freqs = np.linspace(min_freqr, max_freqr, nfreqr)
+        # exact eigenfrequencies for neumann
+        nmax = 100
+        exact_vals = []
+        for i in range(nmax):
+            for j in range(nmax):
+                f = np.sqrt((i / lx) ** 2 + (j / ly) ** 2)*c/2
+                if f > min_freqr and f < max_freqr:
+                    exact_vals.append(f)
 
         for indf, f in enumerate(freqs):
             print("frequency : ", f)
-            smfs.k = 2 * np.pi * f / c
+            k = 2 * np.pi * f / c
             _, det = smfs.mfs_fit(k=k, stat='sing')
             print("max ampl:{}, det: {}".format(np.max(np.abs(smfs.ampl)), np.abs(det)))
             det_vals.append(np.log(det))
 
         det_vals = np.stack(det_vals, axis=0)
+        plt.figure(figsize=(10, 3))
         plt.plot(freqs, det_vals)
+        plt.vlines(exact_vals, np.min(det_vals)-0.05, np.max(det_vals)+0.05, linestyles='dashed')
+        plt.xlabel("f (Hz)")
+        plt.tight_layout()
+        plt.ylabel(r"$\log(\sigma_0)$")
+        plt.savefig("eigen_frequencies.pdf")
     elif bound_cond == "robin":
         freqsx, freqsy = np.meshgrid(np.linspace(min_freqr, max_freqr, nfreqr), np.linspace(min_freqi, max_freqi, nfreqi))
         nfreq = nfreqr * nfreqi

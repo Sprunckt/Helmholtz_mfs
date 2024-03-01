@@ -316,7 +316,7 @@ class Simulation:
             if non_conv:
                 in_mask = in_polygon(compute_points, self.poly.vertices)
             else:
-                in_mask = self.poly.is_in(compute_points, min_dist=tol)
+                in_mask = self.poly.is_in(compute_points, tol)
         else:
             in_mask = np.ones(len(compute_points), dtype=bool)
 

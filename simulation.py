@@ -1,5 +1,5 @@
 import numpy as np
-from mfs import HelmholtzMFS, SampledBoundary
+from mfs import HelmholtzMFS, SampledBoundary, compute_hessian2d
 from utils import Polygon, c, ExtrudedPolygon, in_polygon, Cuboid
 import multiprocessing as mp
 import time
@@ -11,7 +11,7 @@ from scipy.spatial import ConvexHull
 class Simulation:
     def __init__(self, vertices: np.ndarray, fs: float, nfreq: int, boundsep: float, dx: float, pos_src: np.ndarray,
                  cond='neumann', add_src=15, nsrc_schedule=None, min_dist=0.01, error_sep=None, error_thresh=0.05,
-                 sep_red=0.8, beta=None, height=0., poly_virt=None, convexify=False):
+                 sep_red=0.8, src_ampl=None, beta=None, height=0., poly_virt=None, convexify=False):
         """
         Simulation class for Helmholtz equation: simulate a source at pos_src in a polygonal domain with boundary
         conditions at different frequencies. Can generate time-domain signals by applying an inverse Fourier transform.
@@ -36,6 +36,12 @@ class Simulation:
             - sep_red: reduction factor applied at the separation between sources at each resampling in case the error
         is above the threshold
         """
+        if src_ampl is None:
+            src_ampl = np.ones([len(pos_src), nfreq])
+        else:
+            assert src_ampl.shape == (len(pos_src), nfreq), "src_ampl should have shape (len(pos_src), nfreq)"
+        self.src_ampl = src_ampl
+
         self.fs, self.dx = fs, dx
         self.convexify = convexify
         if height > 0 or np.asarray(vertices).shape == (3,):
@@ -48,7 +54,7 @@ class Simulation:
                     self.poly_virt = ExtrudedPolygon(vertices[ConvexHull(vertices).vertices], height)
                 else:
                     self.poly_virt = self.poly
-            else: # cuboid
+            else:  # cuboid
                 self.poly = Cuboid(*vertices)
                 self.poly_virt = self.poly
         else:
@@ -87,15 +93,12 @@ class Simulation:
                                                       nsrc_schedule["freq_marks"][:, np.newaxis], axis=1)
 
         message = "number of sample marks should be one less than number of source parameters (last freq not in)"
-        if nsrc_schedule["method"] == "per_wavelength":
-            assert len(nsrc_schedule["sample_marks"]) == len(nsrc_schedule["nsrc"]) - 1, message
-        elif nsrc_schedule["method"] == "separation":
-            assert len(nsrc_schedule["sample_marks"]) == len(nsrc_schedule["sep"]) - 1, message
-        else:
+        if nsrc_schedule["method"] not in ["per_wavelength", "separation"]:
             raise ValueError("sampling method should be either per_wavelength or separation")
 
         # add last sample mark (highest frequency)
-        nsrc_schedule["sample_marks"] = np.concatenate([nsrc_schedule["sample_marks"], [len(self.freqs) - 1]])
+        if len(nsrc_schedule["sample_marks"]) < len(nsrc_schedule["freq_marks"]) + 1:
+            nsrc_schedule["sample_marks"] = np.concatenate([nsrc_schedule["sample_marks"], [len(self.freqs) - 1]])
         if nsrc_schedule["method"] == "per_wavelength":
             nsrc_schedule["sep"] = np.zeros(len(nsrc_schedule["sample_marks"]))
         for i in range(len(nsrc_schedule["sample_marks"])):  # sample virtual boundary for each mark
@@ -103,7 +106,8 @@ class Simulation:
                 nsrc_schedule["sep"][i] = c / self.freqs[nsrc_schedule["sample_marks"][i]] / \
                                            (nsrc_schedule["nsrc"][i] - 1)
             vbound = SampledBoundary(self.poly_virt, nsrc_schedule["sep"][i],
-                                     min_dist=0., sample_type="separation", dx=self.dx)
+                                     min_dist=0., sample_type="separation", dx=self.dx, distribution='uniform')
+
             self.vpos.append(vbound)
 
         # for each frequency, assign the index of the corresponding reference frequency mark
@@ -125,7 +129,8 @@ class Simulation:
         self.room_bound = SampledBoundary(self.poly, boundsep, min_dist=min_dist, sample_type="separation")
 
         self.mfs = HelmholtzMFS(room_bound=self.room_bound, virtual_bound=self.vpos[0], pos_src=pos_src,
-                                poly=self.poly, cond=cond, add_fun=add_src, beta=beta)
+                                poly=self.poly, cond=cond, add_fun=add_src, beta=beta,
+                                src_ampl=self.src_ampl[:, nsrc_schedule["sample_marks"][0]])
 
         print("Number of boundary points: ", self.mfs.nbound)
 
@@ -140,13 +145,14 @@ class Simulation:
         print("Number of error points: ", len(error_points))
         for i, indfreq in enumerate(nsrc_schedule["sample_marks"]):
             k = 2 * np.pi * self.freqs[indfreq] / c  # update wave number
+            self.mfs.src_ampl = self.src_ampl[:, indfreq]
             # simulate at each mark frequency, increase number of sources until error is below threshold
             rel_error, max_tries = np.inf, 10
 
             if i > 0 and nsrc_schedule["sep"][i] > nsrc_schedule["sep"][i-1]:  # separation should decrease
                 nsrc_schedule["sep"][i] = nsrc_schedule["sep"][i-1]
 
-                self.vpos[i] = self.vpos[i-1]
+                self.vpos[i] = self.vpos[i-1].copy()
             t1 = time.time()
             while rel_error > error_thresh and max_tries > 0:
                 max_tries -= 1
@@ -161,7 +167,8 @@ class Simulation:
                     nsrc_schedule["sep"][i] = nsrc_schedule["sep"][i] * sep_red
 
                     self.vpos[i] = SampledBoundary(self.poly_virt, nsrc_schedule["sep"][i],
-                                                   min_dist=0., sample_type="separation", dx=self.dx)
+                                                   min_dist=0., sample_type="separation", dx=self.dx,
+                                                   distribution='uniform')
 
                     print("error {} above threshold, retrying "
                           "with separation {}, {} sources".format(rel_error, nsrc_schedule["sep"][i],
@@ -210,8 +217,11 @@ class Simulation:
             if self.d == 2:
                 self.poly_virt = Polygon(self.poly.vertices[ConvexHull(self.poly.vertices).vertices])
             else: 
-                self.poly_virt = ExtrudedPolygon(self.poly.vertices[ConvexHull(self.poly.vertices).vertices], self.height)
-
+                self.poly_virt = ExtrudedPolygon(self.poly.vertices[ConvexHull(self.poly.vertices).vertices],
+                                                 self.height)
+        else:
+            self.poly_virt = self.poly
+        self.mfs.poly = self.poly
         self._resample()
 
     def update_params(self, new_phi, new_theta, new_phi_virt=None, new_theta_virt=None):
@@ -235,27 +245,44 @@ class Simulation:
         t1 = time.time()
 
         mfs_tmp = HelmholtzMFS(room_bound=self.mfs.room_bound, virtual_bound=self.vpos[self.freq_ref[ind]],
-                               pos_src=self.mfs.pos_src, poly=self.poly,
+                               pos_src=self.mfs.pos_src, poly=self.poly, src_ampl=self.src_ampl[:, ind],
                                cond=self.mfs.cond, beta=self.mfs.beta, add_fun=self.mfs.add_fun)
         mfs_tmp.mfs_fit(k=self.wave_numbers[ind], solver="lstsq")
         t2 = time.time()
         print("simulating frequency {}; time {} s; {} sources".format(self.freqs[ind], t2-t1, mfs_tmp.nsrc))
         return mfs_tmp.ampl
 
-    def compute_freq(self, compute_points, ind, verbose=False):
+    def compute_freq(self, compute_points, ind, verbose=False, use_src=True):
         """Compute the solution at the given points (shape (npoints, d)) at the given frequency"""
         t1 = time.time()
         mfs_tmp = HelmholtzMFS(room_bound=self.mfs.room_bound, virtual_bound=self.vpos[self.freq_ref[ind]],
                                pos_src=self.mfs.pos_src, poly=self.poly, cond=self.mfs.cond,
                                beta=self.mfs.beta, ampl=self.ampl[ind],
-                               add_fun=self.mfs.add_fun)
+                               add_fun=self.mfs.add_fun, src_ampl=self.src_ampl[:, ind])
         if verbose:
             print("computing frequency {}; {} sources".format(self.freqs[ind], mfs_tmp.nsrc))
-        res = mfs_tmp.evaluate_sol(compute_points, self.wave_numbers[ind])
+        res = mfs_tmp.evaluate_sol(compute_points, self.wave_numbers[ind], use_src=use_src)
+
         t2 = time.time()
         print("time {} s".format(t2 - t1))
 
         return res
+
+    def compute_grad_freq(self, compute_points, ind, verbose=False, use_src=True):
+        """Compute the solution at the given points (shape (npoints, d)) at the given frequency"""
+        t1 = time.time()
+        mfs_tmp = HelmholtzMFS(room_bound=self.mfs.room_bound, virtual_bound=self.vpos[self.freq_ref[ind]],
+                               pos_src=self.mfs.pos_src, poly=self.poly, cond=self.mfs.cond,
+                               beta=self.mfs.beta, ampl=self.ampl[ind],
+                               add_fun=self.mfs.add_fun, src_ampl=self.src_ampl[:, ind])
+        if verbose:
+            print("computing frequency {}; {} sources".format(self.freqs[ind], mfs_tmp.nsrc))
+
+        t2 = time.time()
+        if verbose:
+            print("time {} s".format(t2 - t1))
+
+        return mfs_tmp.evaluate_grad(compute_points, self.wave_numbers[ind], use_src=use_src)
 
     def simulate(self, nworkers=1):
         """Compute the solution coefficients at each frequency using nworkers processes."""
@@ -277,17 +304,20 @@ class Simulation:
 
         print("total simulation time : {} s".format(time.time()-t1))
 
-    def compute(self, compute_points, nworkers=1, tol=0., non_conv=False):
+    def compute(self, compute_points, nworkers=1, tol=0., non_conv=False, check_in=True, use_src=True, verbose=False):
         """Compute the solution at the given points (shape (npoints, d)) at all frequencies, returns a tuple
         (res, is_in) of arrays of shape (npoints, nfreqs) and (npoints,) respectively, where is_in is True if the
         corresponding point is inside the domain, False otherwise and res contains the scalar solution at each compute
         point and frequency."""
 
         t1 = time.time()
-        if non_conv:
-            in_mask = in_polygon(compute_points, self.poly.vertices)
+        if check_in:
+            if non_conv:
+                in_mask = in_polygon(compute_points, self.poly.vertices)
+            else:
+                in_mask = self.poly.is_in(compute_points, min_dist=tol)
         else:
-            in_mask = self.poly.is_in(compute_points, min_dist=tol)
+            in_mask = np.ones(len(compute_points), dtype=bool)
 
         res_tot = np.full([len(compute_points), self.nfreqs], np.nan, dtype=np.complex128)
         res_tot[in_mask, 0] = 0.  # 0 frequency
@@ -298,8 +328,9 @@ class Simulation:
 
         if nworkers == 1:
             res = np.zeros([npoints, self.nfreqs - 1], dtype=np.complex128)
+
             for i in range(1, self.nfreqs):
-                res[:, i-1] = self.compute_freq(to_compute, i)
+                res[:, i-1] = self.compute_freq(to_compute, i, use_src=use_src)
         else:
             if nworkers < 0:
                 # use all available cores
@@ -307,16 +338,55 @@ class Simulation:
             else:
                 pool = mp.Pool(processes=nworkers)
             # local function to compute the solution at a given frequency, take only ind as argument
-            fun = partial(self.compute_freq, to_compute)
+            fun = partial(self.compute_freq, to_compute, use_src=use_src)
             res = np.stack(pool.map(fun, np.arange(1, self.nfreqs)), axis=1)
             pool.close()
 
         res_tot[ind_comp, 1:] = res
 
         t2 = time.time()
-        print("total computation time : {} s".format(t2 - t1))
+        if verbose:
+            print("total computation time : {} s".format(t2 - t1))
 
         return res_tot, in_mask
+
+    def compute_grad(self, compute_points, nworkers=1, use_src=True, verbose=False):
+        """Compute the solution at the given points (shape (npoints, d)) at all frequencies, returns a tuple
+        (res, is_in) of arrays of shape (npoints, nfreqs) and (npoints,) respectively, where is_in is True if the
+        corresponding point is inside the domain, False otherwise and res contains the scalar solution at each compute
+        point and frequency."""
+
+        t1 = time.time()
+        grad_tot = np.full([len(compute_points), self.nfreqs, 2], np.nan, dtype=np.complex128)
+        grad_tot[:, 0, :] = 0.  # 0 frequency
+
+        npoints = len(compute_points)
+        to_compute = np.reshape(compute_points, [npoints, -1])
+
+        if nworkers == 1:
+            res_grad = np.zeros([npoints, self.nfreqs - 1, 2], dtype=np.complex128)
+
+            for i in range(1, self.nfreqs):
+                res_grad[:, i-1] = self.compute_grad_freq(to_compute, i, use_src=use_src)
+        else:
+            if nworkers < 0:
+                # use all available cores
+                pool = mp.Pool()
+            else:
+                pool = mp.Pool(processes=nworkers)
+            # local function to compute the solution at a given frequency, take only ind as argument
+            fun = partial(self.compute_grad_freq, to_compute, use_src=use_src)
+
+            res_grad = np.stack(pool.map(fun, np.arange(1, self.nfreqs)), axis=1)
+            pool.close()
+
+        grad_tot[:, 1:] = res_grad
+
+        t2 = time.time()
+        if verbose:
+            print("total computation time : {} s".format(t2 - t1))
+
+        return grad_tot
 
     def freq_to_time(self, freq_res, decay=None, low_cut=None):
         """Convert the frequency response to the time impulse response"""
@@ -330,4 +400,41 @@ class Simulation:
         tval = np.linspace(0, self.nfreqs/self.fs, 2*self.nfreqs-2, endpoint=False)
 
         return tval, np.fft.irfft(freq_res, 2*self.nfreqs-2, axis=1)
+
+    def compute_corner_values(self, use_src=True):
+        # compute the values of the solution at the corners of the polygon (take limit for the gradient)
+        res = np.zeros((len(self.poly.vertices), self.nfreqs), dtype=complex)
+
+        res_grad = np.zeros((len(self.poly.vertices), self.nfreqs, 2, 2), dtype=complex)
+        for i in range(1, self.nfreqs):
+            mfs_tmp = HelmholtzMFS(room_bound=self.mfs.room_bound, virtual_bound=self.vpos[self.freq_ref[i]],
+                                   pos_src=self.mfs.pos_src, poly=self.poly, cond=self.mfs.cond,
+                                   beta=self.mfs.beta, ampl=self.ampl[i],
+                                   add_fun=self.mfs.add_fun, src_ampl=self.src_ampl[:, i])
+            res[:, i] = mfs_tmp.evaluate_sol(self.poly.vertices, self.wave_numbers[i], use_src=use_src)
+
+            res_grad[:, i, :, :] = mfs_tmp.evaluate_corner_der(self.wave_numbers[i], use_src=use_src)
+        return res, res_grad
+
+    def compute_src_term(self, compute_points, bound_ids, verbose=False):
+        """Compute the normal derivative of the source term contribution (non optimized for neumann). ! Assumes a single
+        dirac as source term !"""
+        t1 = time.time()
+        res_tot = np.zeros([len(compute_points), self.nfreqs], dtype=np.complex128)
+        betas = self.mfs.beta[bound_ids]
+        normals = self.mfs.poly.get_normal(bound_ids)  # shape (npoints, d)
+        for i in range(1, self.nfreqs):
+            res_tot[:, i] = self.mfs.boundary_operator(compute_points, bound_ids=bound_ids, cond="neumann",
+                                                       use_src=True,
+                                                       k=self.wave_numbers[i])*1j*self.wave_numbers[i]*betas
+
+            res_tot[:, i] += np.sum(normals * np.sum(compute_hessian2d(compute_points, k=self.wave_numbers[i],
+                                                                       src_pos=self.mfs.pos_src) *
+                                    normals[:, np.newaxis, :], axis=2), axis=1)
+
+        t2 = time.time()
+        if verbose:
+            print("total computation time : {} s".format(t2 - t1))
+        return - res_tot   # todo: check sign
+
 

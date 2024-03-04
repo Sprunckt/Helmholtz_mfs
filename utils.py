@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from shapely.geometry import Polygon as ShapelyPolygon
 from shapely.geometry import Point as ShapelyPoint
 import pygmsh
+from scipy.integrate import simps
 
 c = 343
 
@@ -46,6 +47,7 @@ def out_polygon(points, vertices, min_dist=0.0):
         outside[i] = (not poly.contains(pp)) and (poly.distance(pp) > min_dist)
     return outside
 
+
 def in_polygon(points, vertices):
     poly = ShapelyPolygon(vertices)
     inside = np.zeros(points.shape[0], dtype=bool)
@@ -53,7 +55,8 @@ def in_polygon(points, vertices):
         pp = ShapelyPoint(p)
         inside[i] = poly.contains(pp)
     return inside 
-    
+
+
 def plot_boundary(bound, norm_vec, boundv, pos_src):
     plt.plot(bound[:, 0], bound[:, 1], '.-', label='boundary')
     plt.quiver(bound[:, 0], bound[:, 1], norm_vec[:, 0], norm_vec[:, 1])
@@ -252,6 +255,19 @@ class Polygon:
         return np.all(np.sum((np.reshape(points, (-1, 2)) - self.origin)[:, np.newaxis, :] *
                              self.normals[np.newaxis, :, :], axis=2)
                       <= self.phi[np.newaxis, :] - min_dist, axis=1)
+
+    def integrate_edge(self, vals, quad_nodes, edge_id):
+        """Integrate the values vals over the edge with id edge_id, using the quadrature nodes quad_nodes and the
+        simpson rule."""
+        return simps(vals, quad_nodes, axis=0) / self.lengths[edge_id]
+
+    def integrate(self, vals, quad_nodes, quad_ids):
+        """Integrate the values vals over the polygon, using the quadrature nodes quad_nodes and the simpson rule."""
+        res = 0.
+        for i in range(self.nedges):
+            mask = quad_ids == i
+            res += self.integrate_edge(vals[mask], quad_nodes[mask], i)
+        return res
 
     def plot(self):
         plt.plot(self.vertices[:, 0], self.vertices[:, 1], 'x')

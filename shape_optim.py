@@ -35,6 +35,8 @@ class ShapeOptimizer:
         self.g_op = np.zeros((self.n_int, nfreq), dtype=complex)
         self.update_sim()
 
+        self.counter = {"ncall":0}
+
     def fit(self, niter=200, geom_tol=0.5, rmax=20., step=1e-3):
         # optimize using lbgfs-b
         minr = self.antenna_radius + geom_tol
@@ -76,13 +78,12 @@ class ShapeOptimizer:
             start_ind, end_ind = self.quad_intervals[i]+1, self.quad_intervals[i+1]
             self.p_grads[start_ind+1:end_ind] = self.sim_p.compute_grad(self.quad_points[start_ind+1:end_ind],
                                                                         self.nprocess, use_src=False)
-
-            self.q_grads[start_ind+1:end_ind] = self.sim_q.compute_grad(self.quad_points[start_ind+1:end_ind],
-                                                                        self.nprocess)
-
             self.p_grads[start_ind] = cornerval_p[1][i, :, 1, :]
             self.p_grads[end_ind] = cornerval_p[1][(i+1) % self.sim_p.poly.nedges, :, 0, :]
+
             if update_adjoint:
+                self.q_grads[start_ind + 1:end_ind] = self.sim_q.compute_grad(self.quad_points[start_ind + 1:end_ind],
+                                                                              self.nprocess)
                 self.q_grads[start_ind] = cornerval_q[1][i, :, 1, :]
                 self.q_grads[end_ind] = cornerval_q[1][(i+1) % self.sim_p.poly.nedges, :, 0, :]
 
@@ -129,9 +130,9 @@ class ShapeOptimizer:
 
     def partial_derivative(self, i):
         # generate a function psi_i on edges i, i-1 such that psi_i(i) = 1, psi_i(i-1) = 0 = psi_i(i+1)
-        psi = [np.linspace(0, 1, len(self.quad_nodes[self.quad_ids == i-1])),
+        psi = [np.linspace(0, 1, len(self.quad_nodes[self.quad_ids == (i-1) % self.sim_p.poly.nedges])),
                np.linspace(1, 0, len(self.quad_nodes[self.quad_ids == i]))]
-        ind = [i-1, i]
+        ind = [(i-1) % self.sim_p.poly.nedges, i]
         normals = [self.sim_p.poly.normals[i-1], self.sim_p.poly.normals[i]]
         res = np.zeros(2)
 
@@ -154,11 +155,10 @@ class ShapeOptimizer:
 
         return res
 
-    def cost_fun(self, verts, counter, update=True):
-        counter["ncall"] += 1
-        if update:
-            self.update_sim(new_vertices=verts, update_adjoint=False)
-        print("{} calls".format(counter["ncall"]))
+    def cost_fun(self, verbose=False):
+        self.counter["ncall"] += 1
+        if verbose:
+            print("{} calls".format(self.counter["ncall"]))
 
         return 0.5*np.sum(np.real(self.diffs*self.diffs.conj()))
 

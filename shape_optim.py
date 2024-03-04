@@ -1,7 +1,6 @@
 from simulation import Simulation
 import numpy as np
-from scipy.optimize import minimize, differential_evolution
-from utils import mod2pi
+from scipy.optimize import minimize
 
 
 class ShapeOptimizer:
@@ -162,28 +161,109 @@ class ShapeOptimizer:
 
         return 0.5*np.sum(np.real(self.diffs*self.diffs.conj()))
 
-    def cost_fun_params(self, params, counter):
-        counter["ncall"] += 1
-        phi, theta = params[:self.sim_p.poly.nedges], mod2pi(params[self.sim_p.poly.nedges:])
-        self.sim_p.update_params(phi, theta)
-        self.sim_p.reset()
-        self.sim_p.simulate(self.nprocess)
-        obs_sim, _ = self.sim_p.compute(self.mic_pos, self.nprocess)
-        diff = obs_sim - self.observations
-        err = 0.5*np.sum(diff*diff.conj()).real
-        print("{} calls, err {}, params".format(counter["ncall"], err), phi, theta)
 
-        return err
+if __name__ == '__main__':
+    import matplotlib.pyplot as plt
 
-    def cost_fun_tot(self, params, counter):
-        counter["ncall"] += 1
-        phi, theta = params[:self.sim.poly.nedges], mod2pi(params[self.sim.poly.nedges:])
-        self.sim.update_params(phi, theta)
-        self.sim.reset()
-        self.sim.simulate(self.nprocess)
-        obs_sim, _ = self.sim.compute(self.mic_pos, self.nprocess)
-        diff = obs_sim - self.observations  # shape (m, nfreq)
+    fs = 240.
+    nfreq = 3
+    pos_src = np.array([[0., 0.5]])
+    dx = 0.2
 
-        print("{} calls".format(counter["ncall"]))
+    eps = 1.
 
-        return diff
+    def perturbation_field(x, y):
+        v = np.zeros([len(x), 2])
+        indtop = np.where(y == 1.)[0]
+        v[indtop, 1] = -eps * (np.abs(x[indtop]) - 1)
+
+        return v
+
+
+    height = 1.2
+    init_vertices = np.array([[-1, 0], [1, 0.], [1, 1.], [0., 1], [-1, 1]])
+    vertices = init_vertices + height * perturbation_field(init_vertices[:, 0], init_vertices[:, 1])
+
+    antenna_pos = np.array([[0., 0.5]])
+    mic_pos = (0.25 * np.stack([np.cos(np.linspace(0, 2 * np.pi, 25)), np.sin(np.linspace(0, 2 * np.pi, 25))], axis=1)
+               + antenna_pos)
+
+    # plt.plot(vertices[:, 0], vertices[:, 1])
+    # plt.plot(mic_pos[:, 0], mic_pos[:, 1], 'o')
+    # plt.plot(pos_src[:, 0], pos_src[:, 1], 'x')
+    # plt.show()
+
+    beta = [0.06 for i in range(len(vertices))]
+    print("simulating")
+    sim = Simulation(vertices=vertices, fs=fs, nfreq=nfreq, pos_src=pos_src, dx=dx, boundsep=1e-2, min_dist=0.005,
+                     nsrc_schedule=dict(freq_marks=np.array([50.]),
+                                        method='per_wavelength',
+                                        nsrc=np.array([100, 100]), max_relative_error=1e-3),
+                     error_thresh=1e-5, cond='robin', beta=beta, add_src=20)
+    print("done")
+    sim.simulate(2)
+    obs, _ = sim.compute(mic_pos, 3)
+    np.save('data/obs.npy', obs)
+
+    # plot gradient
+    grid = np.meshgrid(np.linspace(-1, 1, 200), np.linspace(0, 1+height, 200))
+    grid_shape = grid[0].shape
+    grid = np.stack([grid[0].reshape(-1), grid[1].reshape(-1)], axis=1)
+    # val, in_mask = sim.compute_grad(grid, 2)[:, 1, :], sim.poly.is_in(grid, 0.005)
+    # val[~in_mask] = np.nan
+    # plt.imshow(np.linalg.norm(val, axis=-1).reshape(grid_shape), extent=[-1, 1, 0, 1+height], origin='lower', vmax=5.)
+    # plt.colorbar()
+    # plt.show()
+
+    init_vertices = np.array([[-1, 0], [1, 0.], [1, 1.], [0., 1], [-1, 1]])
+    opt = ShapeOptimizer(init_vertices, fs, nfreq, pos_src, mic_pos, obs, nprocess=2, dx=dx,
+                         sim_kwargs=dict(boundsep=1e-2, min_dist=0.005,
+                                         nsrc_schedule=dict(freq_marks=np.array([50.]), method='per_wavelength',
+                                                            nsrc=np.array([100, 100]), max_relative_error=1e-3),
+                                         error_thresh=1e-5, cond='robin', beta=beta, add_src=20))
+
+    # val, in_mask = opt.sim_q.compute_grad(grid, 2)[:, 1, :], opt.sim_p.poly.is_in(grid, 0.005)
+    # val[~in_mask] = np.nan
+    # plt.imshow(np.linalg.norm(val, axis=-1).reshape(grid_shape), extent=[-1, 1, 0, 1 + height], origin='lower', vmax=5.)
+    # plt.colorbar()
+    # plt.show()
+
+    vec_field = perturbation_field(opt.quad_points[:, 0], opt.quad_points[:, 1])
+    vec_field_corners = np.zeros((len(opt.sim_p.poly.vertices), 2))
+    shape_der = opt.evaluate_directional_derivative(vec_field, vec_field_corners)
+    print("shape derivative: ", shape_der)
+    print("partial derivatives: ", [opt.partial_derivative(i) for i in range(opt.sim_p.poly.nedges)])
+    # do the same using finite differences
+
+    # opt2 = ShapeOptimizer(np.array([[-1, 0], [1, 0.], [1, 1.], [0., 1], [-1, 1]]), fs, nfreq, pos_src, mic_pos,
+    #                       obs, nprocess=2, dx=dx,
+    #                       sim_kwargs=dict(boundsep=1e-2, min_dist=0.005,
+    #                                       nsrc_schedule=dict(freq_marks=np.array([50.]), method='per_wavelength',
+    #                                                          nsrc=np.array([100, 100]), max_relative_error=1e-3),
+    #                                       error_thresh=1e-5, cond='robin', beta=beta, add_src=20))
+    # vald = opt2.cost_fun()
+    # valdz = []
+    # dzval = [0.01, 0.005, 0.001, 0.0009, 0.0008, 0.0007, 0.0006, 0.0005, 0.0004, 0.0003, 0.0002, 0.0001,
+    #          0.00009, 0.00008, 0.00007, 0.00006, 0.00005, 0.00004, 0.00003, 0.00002, 0.00001, 7e-6, 5e-6, 1e-6]
+    #
+    # for dz in dzval:
+    #     opt2.update_sim(init_vertices + dz*perturbation_field(init_vertices[:, 0], init_vertices[:, 1]),
+    #                     update_adjoint=False)
+    #     valdz.append(opt2.cost_fun())
+    #
+    # fdval = [(valdz[i] - vald)/dzval[i] for i in range(len(dzval))]
+    # plt.loglog(dzval, fdval, '-.')
+    # plt.hlines(shape_der, dzval[-1], dzval[0])
+    # plt.show()
+
+    zval = np.linspace(0, 1.3, 300)
+    val = np.zeros(len(zval))
+    for i, t in enumerate(zval):
+        print(t)
+        opt.update_sim(init_vertices + t*perturbation_field(init_vertices[:, 0], init_vertices[:, 1]),
+                       update_adjoint=False)
+        val[i] = opt.cost_fun()
+
+    plt.plot(zval, val)
+    plt.show()
+

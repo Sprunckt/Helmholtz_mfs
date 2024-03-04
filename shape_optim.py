@@ -104,7 +104,6 @@ class ShapeOptimizer:
         normal_der_p = np.sum(self.p_grads*normals[:, np.newaxis, :], axis=2)  # shape (n_int, nfreq)
         normal_der_q = np.sum(self.q_grads*normals[:, np.newaxis, :], axis=2)
 
-        self.p_values, self.q_values, self.p_grads, self.q_grads = np.real(self.p_values), np.real(self.q_values), np.real(self.p_grads), np.real(self.q_grads)
         vals = normal_term * (np.sum(np.real(self.p_grads * self.q_grads.conj()), axis=(1, 2)) -
                               np.sum(np.real(self.sim_p.wave_numbers[np.newaxis, :] ** 2 *
                                              self.p_values * self.q_values.conj()), axis=1) -

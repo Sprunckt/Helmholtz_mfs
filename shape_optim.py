@@ -110,20 +110,14 @@ class ShapeOptimizer:
                               np.sum(np.real(self.g_op * self.q_values.conj()), axis=1) -
                               2 * np.sum(np.real(normal_der_p * normal_der_q.conj()), axis=1)
                               )
+
         # integrate vals
         vals = self.sim_p.poly.integrate(vals, self.quad_nodes, self.quad_ids)
 
-        # todo: check if this is correct with the np.roll
-        # vals -= np.sum(V_corners[:, :, np.newaxis] *
-        #                (np.roll(self.sim_p.poly.edges[:, :, np.newaxis], 1, axis=0) *
-        #                 np.real(self.corner_values[:, 0, np.newaxis, :]) +  # dnp \bar q (a_i^-)
-        #                 self.sim_p.poly.edges[:, :, np.newaxis]*np.real(self.corner_values[:, 1, np.newaxis, :])))
-
-        # for i in range(self.sim_p.poly.nedges):
-        #     vals -= (np.sum(self.sim_p.poly.edges[i-1, :, np.newaxis] * V_corners[i, :, np.newaxis], -1) *
-        #                     np.real(self.corner_values[i, 0, :]) +
-        #              np.sum(self.sim_p.poly.edges[i, :, np.newaxis] * V_corners[i, :, np.newaxis], -1) *
-        #              np.real(self.corner_values[i, 1, :]))
+        vals -= np.sum(V_corners[:, :, np.newaxis] *  # shape (nedge, 2, nfreq)
+                       (np.roll(self.sim_p.poly.edges[:, :, np.newaxis], 1, axis=0) *  # shape (nedge, 2, nfreq)
+                        np.real(self.corner_values[:, 0, np.newaxis, :]) +  # dnp \bar q (a_i^-)
+                        self.sim_p.poly.edges[:, :, np.newaxis]*np.real(self.corner_values[:, 1, np.newaxis, :])))
 
         return vals
 

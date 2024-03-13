@@ -259,7 +259,7 @@ class Polygon:
     def integrate_edge(self, vals, quad_nodes, edge_id):
         """Integrate the values vals over the edge with id edge_id, using the quadrature nodes quad_nodes and the
         simpson rule."""
-        return simps(vals, quad_nodes, axis=0) / self.lengths[edge_id]
+        return simps(vals, quad_nodes, axis=0) * self.lengths[edge_id]
 
     def integrate(self, vals, quad_nodes, quad_ids):
         """Integrate the values vals over the polygon, using the quadrature nodes quad_nodes and the simpson rule."""

@@ -40,6 +40,7 @@ class Simulation:
             src_ampl = np.ones([len(pos_src), nfreq])
         else:
             assert src_ampl.shape == (len(pos_src), nfreq), "src_ampl should have shape (len(pos_src), nfreq)"
+        src_ampl[:, 0] = 0.  # zero amplitude for freq 0
         self.src_ampl = src_ampl
 
         self.fs, self.dx = fs, dx
@@ -125,9 +126,9 @@ class Simulation:
             print("insufficient boundary separation to account for all frequencies, clipping")
 
         # sample boundary using boundsep
-        self.room_bound = SampledBoundary(self.poly, boundsep, min_dist=min_dist, sample_type="separation")
+        room_bound = SampledBoundary(self.poly, boundsep, min_dist=min_dist, sample_type="separation")
 
-        self.mfs = HelmholtzMFS(room_bound=self.room_bound, virtual_bound=self.vpos[0], pos_src=pos_src,
+        self.mfs = HelmholtzMFS(room_bound=room_bound, virtual_bound=self.vpos[0], pos_src=pos_src,
                                 poly=self.poly, cond=cond, add_fun=add_src, beta=beta,
                                 src_ampl=self.src_ampl[:, nsrc_schedule["sample_marks"][0]])
 
@@ -176,8 +177,9 @@ class Simulation:
                     if nsrc_schedule["sep"][i] < boundsep:
                         boundsep = nsrc_schedule["sep"][i]*0.95
                         print("error above threshold, clipping boundary separation to minimal source separation")
-                        self.mfs.update_boundary(SampledBoundary(self.poly, boundsep, min_dist=min_dist,
-                                                                 sample_type="separation"))
+                        room_bound = SampledBoundary(self.poly, boundsep, min_dist=min_dist, sample_type="separation")
+                        self.mfs.update_boundary(room_bound)
+
                         if error_sep > boundsep:
                             error_sep = boundsep * 0.95
                             error_points, _, error_ids = self.poly.sample(error_sep, sample_type="separation", min_dist=min_dist)
@@ -416,26 +418,3 @@ class Simulation:
 
             res_grad[:, i, :, :] = mfs_tmp.evaluate_corner_der(self.wave_numbers[i], use_src=use_src)
         return res, res_grad
-
-    def compute_src_term(self, compute_points, bound_ids, verbose=False):
-        """Compute the normal derivative of the source term contribution (non optimized for neumann). ! Assumes a single
-        dirac as source term !"""
-        t1 = time.time()
-        res_tot = np.zeros([len(compute_points), self.nfreqs], dtype=np.complex128)
-        betas = self.mfs.beta[bound_ids]
-        normals = self.mfs.poly.get_normal(bound_ids)  # shape (npoints, d)
-        for i in range(1, self.nfreqs):
-            res_tot[:, i] = self.mfs.boundary_operator(compute_points, bound_ids=bound_ids, cond="neumann",
-                                                       use_src=True,
-                                                       k=self.wave_numbers[i])*1j*self.wave_numbers[i]*betas
-
-            res_tot[:, i] += np.sum(normals * np.sum(compute_hessian2d(compute_points, k=self.wave_numbers[i],
-                                                                       src_pos=self.mfs.pos_src) *
-                                    normals[:, np.newaxis, :], axis=2), axis=1)
-
-        t2 = time.time()
-        if verbose:
-            print("total computation time : {} s".format(t2 - t1))
-        return - res_tot   # todo: check sign
-
-

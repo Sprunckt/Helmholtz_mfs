@@ -186,7 +186,7 @@ class HelmholtzMFS:
             assert len(beta) == self.poly.nedges + 2*(self.d - 2), "beta must be a vector of length nedges if d=2, " \
                                                                       "nedges + 2 if d=3"
             self.beta = np.asarray(beta)
-        self.beta_is_callable = callable(beta[0])
+        self.beta_is_callable = callable(self.beta[0])
 
         if ampl is not None:
             self.ampl = ampl

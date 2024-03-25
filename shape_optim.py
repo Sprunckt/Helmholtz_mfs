@@ -124,19 +124,17 @@ class ShapeOptimizer:
         ind = [(i-1) % self.sim_p.poly.nedges, i]
         normals = [self.sim_p.poly.normals[i-1], self.sim_p.poly.normals[i]]
         res = np.zeros(2)
-
+        beta_val_tot = self.sim_p.mfs.beta[self.quad_ids]
         for j in range(2):
             quad_ids = np.where(self.quad_ids == ind[j])[0]
             p_val, q_val = self.p_values[quad_ids], self.q_values[quad_ids]
             p_grad, q_grad = self.p_grads[quad_ids], self.q_grads[quad_ids]
             normal = normals[j]
-            normal_der_p = np.sum(p_grad * normal[np.newaxis, :], axis=1)
-            normal_der_q = np.sum(q_grad * normal[np.newaxis, :], axis=1)
-
+            beta_val = beta_val_tot[quad_ids]
             vals = (np.sum(np.real(p_grad * q_grad.conj()), axis=(1, 2)) -
                     np.sum(np.real(self.sim_p.wave_numbers[np.newaxis, :]**2 * p_val * q_val.conj()), axis=1) +
-                    2 * np.sum(np.real(beta_val * beta_val.conj()) *
-                               self.sim_p.wave_numbers[np.newaxis, :] ** 2 *
+                    2 * np.sum(np.real(beta_val * beta_val.conj())[:, np.newaxis] *
+                               self.sim_p.wave_numbers[np.newaxis, :]**2 *
                                np.real(p_val * q_val.conj()), axis=1))*psi[j]
             res = res + normal*self.sim_p.poly.integrate_edge(vals, self.quad_nodes[quad_ids], ind[j])
         renormed_edge1 = self.sim_p.poly.edges[i] / np.linalg.norm(self.sim_p.poly.edges[i])

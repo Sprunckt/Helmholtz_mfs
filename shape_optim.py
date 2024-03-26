@@ -5,14 +5,16 @@ from scipy.optimize import minimize
 
 class ShapeOptimizer:
     def __init__(self, init_vertices: np.ndarray, fs: float, nfreq: int, source_pos: np.ndarray, mic_pos: np.ndarray,
-                 measurements: np.ndarray, dx: float, nprocess=1, n_int=1000, sim_kwargs=None, src_ampl=None):
+                 measurements: np.ndarray, dx: float, nprocess=1, n_int=1000, origin=None,
+                 sim_kwargs=None, src_ampl=None):
         if sim_kwargs is None:
             sim_kwargs = {"boundsep": 0.05}
-        self.sim_p = Simulation(vertices=init_vertices, fs=fs, nfreq=nfreq, dx=dx,
+        self.sim_p = Simulation(vertices=init_vertices, fs=fs, nfreq=nfreq, dx=dx, origin=origin,
                                 pos_src=source_pos, src_ampl=src_ampl, **sim_kwargs)
         sim_kwargs_q = sim_kwargs.copy()
         sim_kwargs_q["beta"] = - np.asarray(sim_kwargs_q["beta"])  # todo: handle callable case
-        self.sim_q = Simulation(vertices=init_vertices, fs=fs, nfreq=nfreq, dx=dx, pos_src=mic_pos, **sim_kwargs_q)
+        self.sim_q = Simulation(vertices=init_vertices, fs=fs, nfreq=nfreq, dx=dx, pos_src=mic_pos, origin=origin,
+                                **sim_kwargs_q)
 
         self.source_pos = source_pos
         self.mic_pos = mic_pos
@@ -54,6 +56,12 @@ class ShapeOptimizer:
 
     def update_sim(self, new_vertices=None, update_adjoint=True):
         if new_vertices is not None:
+            if type(new_vertices) == np.ndarray:
+                self.sim_p.update_vertices(new_vertices)
+                self.sim_q.update_vertices(new_vertices)
+            elif type(new_vertices) == tuple and len(new_vertices) == 2:
+                self.sim_p.update_params(*new_vertices)
+                self.sim_q.update_params(*new_vertices)
             self.sim_p.update_vertices(new_vertices)
             self.sim_q.update_vertices(new_vertices)
 
@@ -142,6 +150,25 @@ class ShapeOptimizer:
 
         res = res + (renormed_edge1 - renormed_edge2)*np.sum(np.real(self.corner_values[i, :]))
         return res / self.nmics
+
+    def partial_derivative_thetai(self, i):
+        V = np.zeros((self.n_int, 2))
+        quad_ids = np.where(self.quad_ids == i)[0]
+        nquad, indnext = len(quad_ids), (i+1) % self.sim_p.poly.nedges
+        epsi = ((np.sum(self.sim_p.poly.translated_vertices[i]*self.sim_p.poly.normals[i-1]) +
+                 self.sim_p.poly.phi[i]*np.cos(self.sim_p.poly.angles[i-1])) /
+                np.sin(self.sim_p.poly.angles[i-1])**2)
+        epsip = ((np.sum(self.sim_p.poly.translated_vertices[i] * self.sim_p.poly.normals[indnext]) +
+                  self.sim_p.poly.phi[i] * np.cos(self.sim_p.poly.angles[indnext])) /
+                 np.sin(self.sim_p.poly.angles[indnext]) ** 2)
+        V[quad_ids] += (epsi * np.linspace(0, 1, nquad)[:, np.newaxis] *
+                        self.sim_p.poly.renormed_edges[i-1][np.newaxis, :] +
+                        (epsip * np.linspace(1, 0, nquad)[:, np.newaxis] *
+                         self.sim_p.poly.renormed_edges[indnext][np.newaxis, :]))
+        V_corners = np.zeros((self.sim_p.poly.nedges, 2))
+        V_corners[i] = epsi*self.sim_p.poly.renormed_edges[i-1]
+        V_corners[indnext] = epsip*self.sim_p.poly.renormed_edges[indnext]
+        return self.evaluate_directional_derivative(V, V_corners)
 
     def cost_fun(self, verbose=False):
         self.counter["ncall"] += 1

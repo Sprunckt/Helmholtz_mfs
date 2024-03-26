@@ -3,7 +3,7 @@ import unittest
 
 import matplotlib.pyplot as plt
 import numpy as np
-from utils import Polygon, mod2pi
+from utils import Polygon, mod2pi, angle_distance
 
 
 # test polygon
@@ -17,9 +17,12 @@ class TestPolygon1(unittest.TestCase):
             poly = Polygon(np.array([[np.cos(2*np.pi*i / k),
                                       np.sin(2*np.pi*i / k)] for i in range(k)]), origin=self.origin)
             for i in range(k):
-                self.assertAlmostEqual(mod2pi(poly.angles[i]), mod2pi(np.pi - 2 * np.pi / k), places=12)
-                self.assertAlmostEqual(mod2pi(poly.polar_angles[i]), mod2pi(np.pi/2 + np.pi * (2*i+1) / k), places=12)
-                self.assertAlmostEqual(mod2pi(poly.theta[i]), mod2pi(np.pi * (2*i+1) / k), places=12)
+                self.assertAlmostEqual(angle_distance(mod2pi(poly.angles[i]),
+                                                      mod2pi(np.pi - 2 * np.pi / k)), 0, places=12)
+                self.assertAlmostEqual(angle_distance(poly.polar_angles[i],
+                                                      mod2pi(np.pi/2 + np.pi * (2*i+1) / k)), 0, places=12)
+                self.assertAlmostEqual(angle_distance(mod2pi(poly.theta[i]),
+                                                      mod2pi(np.pi * (2*i+1) / k)), 0, places=12)
 
     def test_param(self):
         for k in range(3, self.max_nedges + 1):
@@ -27,10 +30,11 @@ class TestPolygon1(unittest.TestCase):
                                       np.sin(2*np.pi*i / k)] for i in range(k)]), origin=self.origin)
             poly2 = Polygon((poly.phi, poly.theta), origin=self.origin)
             for i in range(k):
-                # sort vertices by angle
-                sorted_v1 = poly.vertices[np.argsort(poly.polar_angles), :]
-                sorted_v2 = poly2.vertices[np.argsort(poly2.polar_angles), :]
-                self.assertAlmostEqual(np.linalg.norm(sorted_v1[i] - sorted_v2[i]), 0, places=12)
+                # sort vertices by closest angle
+                angle_dists = angle_distance(poly.polar_angles[:, np.newaxis], poly2.polar_angles[np.newaxis, :])
+                closest = np.argmin(angle_dists, axis=1)
+                sorted_v2 = poly2.vertices[closest, :]
+                self.assertAlmostEqual(np.linalg.norm(poly.vertices[i] - sorted_v2[i]), 0, places=12)
 
 
 class TestPolygon2(unittest.TestCase):

@@ -11,7 +11,7 @@ from scipy.spatial import ConvexHull
 class Simulation:
     def __init__(self, vertices: np.ndarray, fs: float, nfreq: int, boundsep: float, dx: float, pos_src: np.ndarray,
                  cond='neumann', add_src=15, nsrc_schedule=None, min_dist=0.01, error_sep=None, error_thresh=0.05,
-                 sep_red=0.8, src_ampl=None, beta=None, height=0., poly_virt=None, convexify=False):
+                 sep_red=0.8, src_ampl=None, beta=None, height=0., poly_virt=None, convexify=False, origin=None):
         """
         Simulation class for Helmholtz equation: simulate a source at pos_src in a polygonal domain with boundary
         conditions at different frequencies. Can generate time-domain signals by applying an inverse Fourier transform.
@@ -60,7 +60,7 @@ class Simulation:
                 self.poly_virt = self.poly
         else:
             self.d = 2
-            self.poly = Polygon(vertices)
+            self.poly = Polygon(vertices, origin=origin)
             if poly_virt is not None:
                 self.poly_virt = poly_virt
             elif convexify:
@@ -318,7 +318,7 @@ class Simulation:
             if non_conv:
                 in_mask = in_polygon(compute_points, self.poly.vertices)
             else:
-                in_mask = self.poly.is_in(compute_points, tol)
+                in_mask = self.poly.is_in(compute_points, tol=tol)
         else:
             in_mask = np.ones(len(compute_points), dtype=bool)
 

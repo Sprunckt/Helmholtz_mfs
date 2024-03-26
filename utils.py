@@ -189,6 +189,7 @@ class Polygon:
 
     def _update_edges_and_angles(self):
         self.edges = np.roll(self.vertices, -1, axis=0) - self.vertices
+        self.renormed_edges = self.edges / np.linalg.norm(self.edges, axis=1)[:, np.newaxis]
         self.nedges = len(self.edges)
         self.lengths = np.linalg.norm(self.edges, axis=1)  # length of each edge
         renormed_edges = self.edges / self.lengths[:, np.newaxis]
@@ -197,6 +198,7 @@ class Polygon:
         sin_sign = -np.sign(np.cross(-np.roll(renormed_edges, 1, axis=0), renormed_edges))
         self.angles = np.arccos(np.clip(dotprod, -1, 1))
         self.angles = mod2pi(np.where(sin_sign < 0, 2 * np.pi - self.angles, self.angles))
+        self.translated_vertices = self.vertices - self.origin
 
     def update_param(self, new_phi, new_theta):
         self.phi = new_phi
@@ -217,8 +219,7 @@ class Polygon:
             intersections.append(tmp[np.isfinite(tmp[:, 0])])
 
         intersections = np.concatenate(intersections, axis=0)
-
-        self.vertices = intersections[self.is_in(intersections, 1e-6)]
+        self.vertices = intersections[self.is_in(intersections, tol=1e-6)]
 
         self.update_vertices(self.vertices, sort=True)
 
@@ -249,12 +250,12 @@ class Polygon:
 
         self.theta = mod2pi(self.polar_angles - np.pi / 2)  # angles parametrizing the normals
 
-    def is_in(self, points, min_dist=0.):
+    def is_in(self, points, min_dist=0., tol=1e-6):
         """Return an array of booleans indicating whether each point is inside the (convex) polygon."""
         # compute scalar products between each outward normal and the vector from the origin to the point
         return np.all(np.sum((np.reshape(points, (-1, 2)) - self.origin)[:, np.newaxis, :] *
                              self.normals[np.newaxis, :, :], axis=2)
-                      <= self.phi[np.newaxis, :] - min_dist, axis=1)
+                      <= self.phi[np.newaxis, :] - min_dist + tol, axis=1)
 
     def integrate_edge(self, vals, quad_nodes, edge_id):
         """Integrate the values vals over the edge with id edge_id, using the quadrature nodes quad_nodes and the
@@ -421,6 +422,11 @@ class Cuboid(Polygon):
 def mod2pi(angle):
     """Return angle modulo 2*pi"""
     return np.where(angle < 0, angle + 2*np.pi, angle)
+
+
+def angle_distance(angle1, angle2):
+    """Return the distance between two angles in [0, 2*pi]"""
+    return np.minimum(np.abs(angle1 - angle2), 2*np.pi - np.abs(angle1 - angle2))
 
 
 def gmsh_sampling(vertices, mesh_size):

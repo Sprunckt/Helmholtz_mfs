@@ -21,19 +21,21 @@ class TestPolygon1(unittest.TestCase):
                                                       mod2pi(np.pi - 2 * np.pi / k)), 0, places=12)
                 self.assertAlmostEqual(angle_distance(poly.polar_angles[i],
                                                       mod2pi(np.pi/2 + np.pi * (2*i+1) / k)), 0, places=12)
-                self.assertAlmostEqual(angle_distance(mod2pi(poly.theta[i]),
-                                                      mod2pi(np.pi * (2*i+1) / k)), 0, places=12)
+                #self.assertAlmostEqual(angle_distance(mod2pi(poly.theta[i]),
+                #                                      mod2pi(np.pi * (2*i+1) / k)), 0, places=12)
 
     def test_param(self):
         for k in range(3, self.max_nedges + 1):
             poly = Polygon(np.array([[np.cos(2*np.pi*i / k),
                                       np.sin(2*np.pi*i / k)] for i in range(k)]), origin=self.origin)
-            poly2 = Polygon((poly.phi, poly.theta), origin=self.origin)
+            poly2 = Polygon(poly.projs, origin=self.origin, parametrization='half-planes')
+
             for i in range(k):
                 # sort vertices by closest angle
                 angle_dists = angle_distance(poly.polar_angles[:, np.newaxis], poly2.polar_angles[np.newaxis, :])
                 closest = np.argmin(angle_dists, axis=1)
                 sorted_v2 = poly2.vertices[closest, :]
+
                 self.assertAlmostEqual(np.linalg.norm(poly.vertices[i] - sorted_v2[i]), 0, places=12)
 
 

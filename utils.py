@@ -68,25 +68,24 @@ def plot_boundary(bound, norm_vec, boundv, pos_src):
 
 
 class Polygon:
-    def __init__(self, inp, origin=None):
+    def __init__(self, inp, origin=None, parametrization='vertices'):
 
-        self.polar_angles, self.phi, self.theta = None, None, None
+        self.polar_angles, self.projs, self.distances = None, None, None
         self.vertices, self.nedges, self.lengths, self.normals = None, None, None, None
-        if origin is None:
-            self.origin = None
-        else:
-            self.origin = origin
 
-        # tuple (distances to origin, normal angles)
-        if type(inp) is tuple and len(inp) == 2 and type(inp[0]) is np.ndarray and type(inp[1]) is np.ndarray:
-            self.update_param(*inp)
-
-        elif type(inp) is np.ndarray:  # vertices
-            if self.origin is None:
+        if parametrization == "vertices":
+            if origin is None:
                 self.origin = np.mean(inp, axis=0)
                 print('Polygon origin automatically set to {}'.format(self.origin))
-
+            else:
+                self.origin = origin
             self.update_vertices(inp)
+
+        elif parametrization == 'half-planes':
+            if origin is None:
+                raise ValueError('Polygon must be initialized with an origin if given as half-plane parametrization')
+            self.origin = origin
+            self.update_param(inp)
 
         else:
             raise TypeError('Polygon must be initialized with a numpy array or a tuple of numpy arrays')
@@ -165,12 +164,6 @@ class Polygon:
     def get_normal(self, edge_id):
         return self.normals[edge_id]
 
-    def parametrization_to_coord(self, edge_id, param):
-        """Given an array of integers edge_id and an array of floats param (comprised between 0 and 1), return the
-        corresponding coordinates in 2D"""
-        v1, v2 = self.vertices[edge_id], self.vertices[(edge_id + 1) % self.nedges]
-        return v1 + param[:, np.newaxis] * (v2 - v1)
-
     def compute_angles(self, points):
         """Compute polar angles of points with respect to the vertices of the polygon, using the next edge (in
         trigonometric order) as polar axis. Return angles and vectors from vertices to points."""
@@ -199,18 +192,18 @@ class Polygon:
         self.angles = np.arccos(np.clip(dotprod, -1, 1))
         self.angles = mod2pi(np.where(sin_sign < 0, 2 * np.pi - self.angles, self.angles))
         self.translated_vertices = self.vertices - self.origin
+        # compute polar angles of each edge with respect to the x-axis assuming origin is a vertex, in [-2, -2+2pi]
+        self.polar_angles = mod2pi(np.arctan2(self.edges[:, 1], self.edges[:, 0]))
 
-    def update_param(self, new_phi, new_theta):
-        self.phi = new_phi
-        self.theta = mod2pi(new_theta)
-        self.nedges = len(self.phi)
-        self.normals = np.stack([np.cos(self.theta), np.sin(self.theta)], axis=1)
-        if self.origin is None:
-            raise ValueError('Polygon must be initialized with an origin if given as a tuple (phi, theta)')
-        renormed_normals = self.normals * self.phi[:, np.newaxis]
+    def update_param(self, new_projs):
+        self.projs = new_projs
+        self.distances = np.linalg.norm(new_projs - self.origin, axis=1)
+        self.nedges = len(self.projs)
+        self.normals = new_projs - self.origin
+        self.normals /= np.linalg.norm(self.normals, axis=1)[:, np.newaxis]
+
         rotated_normals = np.stack([-self.normals[:, 1], self.normals[:, 0]], axis=1)
-        projections = self.origin + renormed_normals
-        point_pair = np.stack([projections, projections + rotated_normals], axis=1)
+        point_pair = np.stack([new_projs, new_projs + rotated_normals], axis=1)
 
         # compute every possible intersections between the lines defined by the normals
         intersections = []
@@ -219,9 +212,10 @@ class Polygon:
             intersections.append(tmp[np.isfinite(tmp[:, 0])])
 
         intersections = np.concatenate(intersections, axis=0)
+
         self.vertices = intersections[self.is_in(intersections, tol=1e-6)]
 
-        self.update_vertices(self.vertices, sort=True)
+        self.update_vertices(self.vertices, sort=True)  # to ensure indexation is correct
 
     def sort_vertices(self):
         """Sort vertices in trigonometric order"""
@@ -235,27 +229,22 @@ class Polygon:
         if len(self.vertices) < 3:
             raise ValueError("Number of vertices should exceed 2")
         self._update_edges_and_angles()
-        self.lengths = np.linalg.norm(self.edges, axis=1)  # length of each edge
         self.normals = np.stack([self.edges[:, 1], -self.edges[:, 0]], axis=1)
         self.normals /= np.linalg.norm(self.normals, axis=1)[:, np.newaxis]
 
         # distances of each edge to the origin
-        self.phi = np.abs((np.roll(self.vertices[:, 0], -1, axis=0) - self.vertices[:, 0]) *
-                          (self.vertices[:, 1] - self.origin[1]) -
-                          (np.roll(self.vertices[:, 1], -1, axis=0) - self.vertices[:, 1]) *
-                          (self.vertices[:, 0] - self.origin[0])) / self.lengths
-
-        # compute polar angles of each edge with respect to the x-axis assuming origin is a vertex, in [-2, -2+2pi]
-        self.polar_angles = mod2pi(np.arctan2(self.edges[:, 1], self.edges[:, 0]))
-
-        self.theta = mod2pi(self.polar_angles - np.pi / 2)  # angles parametrizing the normals
+        self.distances = np.abs((np.roll(self.vertices[:, 0], -1, axis=0) - self.vertices[:, 0]) *
+                                (self.vertices[:, 1] - self.origin[1]) -
+                                (np.roll(self.vertices[:, 1], -1, axis=0) - self.vertices[:, 1]) *
+                                (self.vertices[:, 0] - self.origin[0])) / self.lengths
+        self.projs = self.origin + self.normals * self.distances[:, np.newaxis]
 
     def is_in(self, points, min_dist=0., tol=1e-6):
         """Return an array of booleans indicating whether each point is inside the (convex) polygon."""
         # compute scalar products between each outward normal and the vector from the origin to the point
         return np.all(np.sum((np.reshape(points, (-1, 2)) - self.origin)[:, np.newaxis, :] *
                              self.normals[np.newaxis, :, :], axis=2)
-                      <= self.phi[np.newaxis, :] - min_dist + tol, axis=1)
+                      <= self.distances[np.newaxis, :] - min_dist + tol, axis=1)
 
     def integrate_edge(self, vals, quad_nodes, edge_id):
         """Integrate the values vals over the edge with id edge_id, using the quadrature nodes quad_nodes and the
@@ -275,7 +264,7 @@ class Polygon:
         plt.plot(self.vertices[:, 0], self.vertices[:, 1], 'k')
         plt.plot([self.vertices[-1, 0], self.vertices[0, 0]], [self.vertices[-1, 1], self.vertices[0, 1]], 'k')
         plt.plot(self.origin[0], self.origin[1], 'o')
-        projections = self.origin + self.phi[:, np.newaxis] * self.normals
+        projections = self.projs
 
         # add vertex numbers as text
         for i in range(self.nedges):
@@ -413,10 +402,10 @@ class Cuboid(Polygon):
 
         return boundary, normals, bound_ids
 
-    def is_in(self, points, tol=0.):
-        return ((tol <= points[:, 0]) & (self.lx - tol >= points[:, 0]) &
-                (tol <= points[:, 1]) & (self.ly - tol >= points[:, 1]) &
-                (tol <= points[:, 2]) & (self.lz - tol >= points[:, 2]))
+    def is_in(self, points, min_dist=0., tol=1e-6):
+        return ((-tol + min_dist <= points[:, 0]) & (self.lx - min_dist + tol >= points[:, 0]) &
+                (-tol + min_dist <= points[:, 1]) & (self.ly - min_dist + tol >= points[:, 1]) &
+                (-tol + min_dist <= points[:, 2]) & (self.lz - min_dist + tol >= points[:, 2]))
 
 
 def mod2pi(angle):

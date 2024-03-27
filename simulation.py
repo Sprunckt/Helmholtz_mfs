@@ -212,33 +212,30 @@ class Simulation:
             self.mfs.update_boundary(SampledBoundary(self.poly, self.boundsep, 
                                                      min_dist=self.min_dist, dx=0))
 
-    def update_vertices(self, new_vert, new_virt_vert=None):
-        self.poly.update_vertices(new_vert)
-        if new_virt_vert is not None:
-            self.poly_virt.update_vertices(new_virt_vert)
-        elif self.convexify:
-            if self.d == 2:
-                self.poly_virt = Polygon(self.poly.vertices[ConvexHull(self.poly.vertices).vertices])
-            else: 
-                self.poly_virt = ExtrudedPolygon(self.poly.vertices[ConvexHull(self.poly.vertices).vertices],
-                                                 self.height)
-        else:
-            self.poly_virt = self.poly
+    def update_poly(self, new_vert, new_virt_vert=None, parametrization="vertices"):
+        if parametrization == "vertices":
+            self.poly.update_vertices(new_vert)
+            if new_virt_vert is not None:
+                self.poly_virt.update_vertices(new_virt_vert)
+            elif self.convexify:
+                if self.d == 2:
+                    self.poly_virt = Polygon(self.poly.vertices[ConvexHull(self.poly.vertices).vertices])
+                else:
+                    self.poly_virt = ExtrudedPolygon(self.poly.vertices[ConvexHull(self.poly.vertices).vertices],
+                                                     self.height)
+            else:
+                self.poly_virt = self.poly
+        elif parametrization == "half-planes":
+            self.poly.update_param(new_vert)
+            if new_virt_vert is not None:
+                self.poly_virt = self.poly_virt.update_param(new_virt_vert)
+            elif self.convexify:
+                if self.d == 2:
+                    self.poly_virt = Polygon(self.poly.vertices[ConvexHull(self.poly.vertices).vertices])
+                else:
+                    self.poly_virt = ExtrudedPolygon(self.poly.vertices[ConvexHull(self.poly.vertices).vertices],
+                                                     self.poly.height)
         self.mfs.poly = self.poly
-        self._resample()
-
-    def update_params(self, new_phi, new_theta, new_phi_virt=None, new_theta_virt=None):
-        self.poly.update_param(new_phi, new_theta)
-
-        if new_phi_virt is not None:
-            self.poly_virt = self.poly_virt.update_param(new_phi_virt, new_theta_virt)
-        elif self.convexify:
-            if self.d == 2:
-                self.poly_virt = Polygon(self.poly.vertices[ConvexHull(self.poly.vertices).vertices])
-            else: 
-                self.poly_virt = ExtrudedPolygon(self.poly.vertices[ConvexHull(self.poly.vertices).vertices],
-                                                 self.poly.height)
-
         self._resample()
 
     def update_source_term(self, new_pos_src):

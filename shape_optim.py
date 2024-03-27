@@ -54,16 +54,10 @@ class ShapeOptimizer:
         print("done")
         return opt_res
 
-    def update_sim(self, new_vertices=None, update_adjoint=True):
+    def update_sim(self, new_vertices=None, update_adjoint=True, parametrization="vertices"):
         if new_vertices is not None:
-            if type(new_vertices) == np.ndarray:
-                self.sim_p.update_vertices(new_vertices)
-                self.sim_q.update_vertices(new_vertices)
-            elif type(new_vertices) == tuple and len(new_vertices) == 2:
-                self.sim_p.update_params(*new_vertices)
-                self.sim_q.update_params(*new_vertices)
-            self.sim_p.update_vertices(new_vertices)
-            self.sim_q.update_vertices(new_vertices)
+            self.sim_p.update_poly(new_vertices, parametrization=parametrization)
+            self.sim_q.update_poly(new_vertices, parametrization=parametrization)
 
         self.sim_p.reset()
         self.sim_p.simulate(self.nprocess)
@@ -151,24 +145,29 @@ class ShapeOptimizer:
         res = res + (renormed_edge1 - renormed_edge2)*np.sum(np.real(self.corner_values[i, :]))
         return res / self.nmics
 
-    def partial_derivative_thetai(self, i):
-        V = np.zeros((self.n_int, 2))
+    def partial_derivative_proji(self, i):
+        V, V_corners = np.zeros((self.n_int, 2)), np.zeros((self.sim_p.poly.nedges, 2))
+        part_der = np.zeros(2)
         quad_ids = np.where(self.quad_ids == i)[0]
         nquad, indnext = len(quad_ids), (i+1) % self.sim_p.poly.nedges
-        epsi = ((np.sum(self.sim_p.poly.translated_vertices[i]*self.sim_p.poly.normals[i-1]) +
-                 self.sim_p.poly.phi[i]*np.cos(self.sim_p.poly.angles[i-1])) /
-                np.sin(self.sim_p.poly.angles[i-1])**2)
-        epsip = ((np.sum(self.sim_p.poly.translated_vertices[i] * self.sim_p.poly.normals[indnext]) +
-                  self.sim_p.poly.phi[i] * np.cos(self.sim_p.poly.angles[indnext])) /
-                 np.sin(self.sim_p.poly.angles[indnext]) ** 2)
-        V[quad_ids] += (epsi * np.linspace(0, 1, nquad)[:, np.newaxis] *
-                        self.sim_p.poly.renormed_edges[i-1][np.newaxis, :] +
-                        (epsip * np.linspace(1, 0, nquad)[:, np.newaxis] *
-                         self.sim_p.poly.renormed_edges[indnext][np.newaxis, :]))
-        V_corners = np.zeros((self.sim_p.poly.nedges, 2))
-        V_corners[i] = epsi*self.sim_p.poly.renormed_edges[i-1]
-        V_corners[indnext] = epsip*self.sim_p.poly.renormed_edges[indnext]
-        return self.evaluate_directional_derivative(V, V_corners)
+        px, origin = self.sim_p.poly.projs[i], self.sim_p.poly.origin
+        edgei, edgeip = self.sim_p.poly.edges[i-1], self.sim_p.poly.edges[indnext]
+        dot_prodi, dot_prodip = np.sum(edgei*(px - origin)), np.sum(edgeip*(px - origin))
+        vi, vip = self.sim_p.poly.vertices[i], self.sim_p.poly.vertices[indnext]
+
+        epsix = (2*px[0] - origin[0] - vi[0])/dot_prodi - edgei[0]*(px[0]-origin[0])*(px[0]-vi[0])/dot_prodi**2
+        epsiy = (2*px[1] - origin[1] - vi[1])/dot_prodi - edgei[1]*(px[1]-origin[1])*(px[1]-vi[1])/dot_prodi**2
+        epsixp = (2*px[0] - origin[0] - vip[0])/dot_prodip - edgeip[0]*(px[0]-origin[0])*(px[0]-vip[0])/dot_prodip**2
+        epsiyp = (2*px[1] - origin[1] - vip[1])/dot_prodip - edgeip[1]*(px[1]-origin[1])*(px[1]-vip[1])/dot_prodip**2
+        alpha = np.linspace(1, 0, nquad)  # linear mapping for edge parametrization
+        V[quad_ids] = alpha[:, np.newaxis]*epsix*edgei + (1-alpha)[:, np.newaxis]*epsixp*edgeip
+        V_corners[i], V_corners[indnext] = epsix * edgei, epsixp * edgeip
+        part_der[0] = self.evaluate_directional_derivative(V, V_corners)
+
+        V[quad_ids] = alpha[:, np.newaxis]*epsiy*edgei + (1-alpha)[:, np.newaxis]*epsiyp*edgeip
+        V_corners[i], V_corners[indnext] = epsiy * edgei, epsiyp * edgeip
+        part_der[1] = self.evaluate_directional_derivative(V, V_corners)
+        return part_der / self.nmics
 
     def cost_fun(self, verbose=False):
         self.counter["ncall"] += 1

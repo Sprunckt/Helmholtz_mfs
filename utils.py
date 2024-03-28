@@ -195,7 +195,7 @@ class Polygon:
         # compute polar angles of each edge with respect to the x-axis assuming origin is a vertex, in [-2, -2+2pi]
         self.polar_angles = mod2pi(np.arctan2(self.edges[:, 1], self.edges[:, 0]))
 
-    def update_param(self, new_projs):
+    def update_param(self, new_projs, new_origin=None):
         self.projs = new_projs
         self.distances = np.linalg.norm(new_projs - self.origin, axis=1)
         self.nedges = len(self.projs)
@@ -214,6 +214,12 @@ class Polygon:
         intersections = np.concatenate(intersections, axis=0)
 
         self.vertices = intersections[self.is_in(intersections, tol=1e-6)]
+
+        if new_origin is not None:
+            self.origin = new_origin
+        else:
+            self.origin = np.mean(self.vertices, axis=0)
+        self.distances = np.linalg.norm(self.vertices - self.origin, axis=1)
 
         self.update_vertices(self.vertices, sort=True)  # to ensure indexation is correct
 

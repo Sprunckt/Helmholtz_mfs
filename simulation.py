@@ -92,7 +92,6 @@ class Simulation:
             nsrc_schedule["sample_marks"] = np.argmax(self.freqs[np.newaxis, :] >=
                                                       nsrc_schedule["freq_marks"][:, np.newaxis], axis=1)
 
-        message = "number of sample marks should be one less than number of source parameters (last freq not in)"
         if nsrc_schedule["method"] not in ["per_wavelength", "separation"]:
             raise ValueError("sampling method should be either per_wavelength or separation")
 

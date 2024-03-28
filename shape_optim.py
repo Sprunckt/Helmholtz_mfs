@@ -1,6 +1,6 @@
 from simulation import Simulation
 import numpy as np
-from scipy.optimize import minimize
+import time
 
 
 class ShapeOptimizer:
@@ -41,18 +41,29 @@ class ShapeOptimizer:
 
         self.counter = {"ncall":0}
 
-    def fit(self, niter=200, geom_tol=0.5, rmax=20., step=1e-3):
-        # optimize using lbgfs-b
-        minr = self.antenna_radius + geom_tol
-        bounds = [(minr, rmax) for _ in range(self.sim.poly.nedges)] + \
-                 [(-4*np.pi, 4*np.pi) for _ in range(self.sim.poly.nedges)]
-        p0 = np.concatenate([self.sim.poly.phi, self.sim.poly.theta])
-        counter = {"ncall":0}
-        print("optimizing...")
-        opt_res = minimize(self.cost_fun, p0, method='Nelder-Mead', 
-        bounds=bounds, args=(counter,))
-        print("done")
-        return opt_res
+    def fit(self, niter=100, jtol=1e-5, gtol=1e-6, step=1e-3, verbose=False):
+        # gradient descend using half plane prametrization
+        log = dict(cost=[self.cost_fun()], grad=[], vert=[self.sim_p.poly.vertices.copy()])
+        it, cost, gradcost = 0, np.inf, np.inf
+        while it < niter and jtol < cost and gtol < gradcost:
+            t1 = time.time()
+            grad = np.zeros((len(self.sim_p.poly.vertices), 2))
+            for i in range(len(self.sim_p.poly.vertices)):
+                grad[i] = self.partial_derivative_proji(i)
+            tgrad = time.time() - t1
+
+            new_projs = self.sim_p.poly.projs - step*grad
+            self.update_sim(new_vertices=new_projs, update_adjoint=True, parametrization="half-planes")
+            cost = self.cost_fun()
+            gradcost = np.linalg.norm(grad)
+            log["cost"].append(cost)
+            log["grad"].append(grad)
+            log["vert"].append(self.sim_p.poly.vertices.copy())
+            it += 1
+            t2 = time.time()
+            print("cost: ", cost, "grad_norm: ", gradcost, "tgrad: ", tgrad, "titer: ", t2-t1)
+
+        return self.sim_p.poly.vertices, log
 
     def update_sim(self, new_vertices=None, update_adjoint=True, parametrization="vertices"):
         if new_vertices is not None:

@@ -108,8 +108,6 @@ class ShapeOptimizer:
                                                                                   axis=-1))  # dn p * q.conj
 
     def evaluate_directional_derivative(self, V, V_corners):
-        self.update_sim(update_adjoint=True)
-
         # shape derivative in direction of the vector field V (shape (n_int, 2))
         normals = self.sim_p.poly.normals[self.quad_ids]
         normal_term = np.sum(V*normals, axis=1)
@@ -178,6 +176,7 @@ class ShapeOptimizer:
         V[quad_ids] = alpha[:, np.newaxis]*epsiy*edgei + (1-alpha)[:, np.newaxis]*epsiyp*edgeip
         V_corners[i], V_corners[indnext] = epsiy * edgei, epsiyp * edgeip
         part_der[1] = self.evaluate_directional_derivative(V, V_corners)
+
         return part_der / self.nmics
 
     def cost_fun(self, verbose=False):

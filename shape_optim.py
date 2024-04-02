@@ -6,7 +6,7 @@ import time
 class ShapeOptimizer:
     def __init__(self, init_vertices: np.ndarray, fs: float, nfreq: int, source_pos: np.ndarray, mic_pos: np.ndarray,
                  measurements: np.ndarray, dx: float, nprocess=1, n_int=1000, origin=None,
-                 sim_kwargs=None, src_ampl=None):
+                 sim_kwargs=None, src_ampl=None, verbose=False):
         if sim_kwargs is None:
             sim_kwargs = {"boundsep": 0.05}
         self.sim_p = Simulation(vertices=init_vertices, fs=fs, nfreq=nfreq, dx=dx, origin=origin,
@@ -37,41 +37,64 @@ class ShapeOptimizer:
         self.p_grads = np.zeros((self.n_int, nfreq, 2), dtype=complex)
         self.q_grads = np.zeros((self.n_int, nfreq, 2), dtype=complex)
         self.corner_values = np.zeros((len(self.sim_p.poly.vertices), nfreq), dtype=complex)
+        self.verbose = verbose
         self.update_sim()
 
         self.counter = {"ncall":0}
 
-    def fit(self, niter=100, jtol=1e-5, gtol=1e-6, step=1e-3, verbose=False):
-        # gradient descend using half plane prametrization
+    def fit(self, niter=100, jtol=1e-5, gtol=1e-6, step=1e-3, alternate=False, parametrization="half-planes"):
         log = dict(cost=[self.cost_fun()], grad=[], vert=[self.sim_p.poly.vertices.copy()])
-        it, cost, gradcost = 0, np.inf, np.inf
+        if parametrization == "half-planes":
+            gradfun = self.partial_derivative_proji
+        elif parametrization == "vertices":
+            gradfun = self.partial_derivative
+        else:
+            raiseValueError("unknown parametrization, accepted values:, 'half-planes', 'vertices'")
+
+        it, cost, gradcost, rotation_ind = 0, np.inf, np.inf, 0
         while it < niter and jtol < cost and gtol < gradcost:
             t1 = time.time()
             grad = np.zeros((len(self.sim_p.poly.vertices), 2))
-            for i in range(len(self.sim_p.poly.vertices)):
-                grad[i] = self.partial_derivative_proji(i)
+            if alternate:
+                grad[rotation_ind] = gradfun(rotation_ind)
+            else:
+                for i in range(len(self.sim_p.poly.vertices)):
+                    grad[i] = gradfun(i)
             tgrad = time.time() - t1
 
-            new_projs = self.sim_p.poly.projs - step*grad
-            self.update_sim(new_vertices=new_projs, update_adjoint=True, parametrization="half-planes")
+            if parametrization == "half-planes":
+                new_param = self.sim_p.poly.projs - step*grad
+            else:
+                new_param = self.sim_p.poly.vertices - step*grad
+            self.update_sim(new_vertices=new_param, update_adjoint=True, parametrization=parametrization)
             cost = self.cost_fun()
             gradcost = np.linalg.norm(grad)
             log["cost"].append(cost)
             log["grad"].append(grad)
             log["vert"].append(self.sim_p.poly.vertices.copy())
-            it += 1
             t2 = time.time()
-            print("cost: ", cost, "grad_norm: ", gradcost, "tgrad: ", tgrad, "titer: ", t2-t1)
+            if self.verbose:
+                # print("rel_error: ", self.sim_p.evaluate_error(freq_ind=-1))
+                print("it: ", it, "descent ind: ", rotation_ind)
+                print("cost: ", cost, "grad_norm: ", gradcost, "ind_desc: ", rotation_ind, 
+                      "tgrad: ", tgrad, "titer: ", t2-t1)
+                print("grad: ", grad)
+                print("current polygon: \n", self.sim_p.poly.vertices)
+                print("mics in poly: ", self.sim_p.poly.is_in(self.mic_pos))
+                print("source in poly: ", self.sim_p.poly.is_in(self.source_pos.reshape([-1, 2])))
+            rotation_ind = (rotation_ind + 1) % self.sim_p.poly.nedges 
+            it += 1
 
         return self.sim_p.poly.vertices, log
 
     def update_sim(self, new_vertices=None, update_adjoint=True, parametrization="vertices"):
         if new_vertices is not None:
+            t1 = time.time()
             self.sim_p.update_poly(new_vertices, parametrization=parametrization)
             self.sim_q.update_poly(new_vertices, parametrization=parametrization)
 
         self.sim_p.reset()
-        self.sim_p.simulate(self.nprocess)
+        self.sim_p.simulate(self.nprocess, verbose=False)
 
         mic_val, _ = self.sim_p.compute(self.mic_pos, self.nprocess)
 
@@ -80,7 +103,7 @@ class ShapeOptimizer:
         if update_adjoint:
             self.sim_q.reset()
             self.sim_q.src_ampl = -self.diffs
-            self.sim_q.simulate(self.nprocess)
+            self.sim_q.simulate(self.nprocess, verbose=False)
             self.q_values = self.sim_q.compute(self.quad_points, self.nprocess, check_in=False)[0]
             cornerval_q = self.sim_q.compute_corner_values()
 

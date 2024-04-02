@@ -193,6 +193,7 @@ class Simulation:
 
             print("simulating frequency {}; time {} s".format(self.freqs[indfreq], t2-t1))
             print("number of sources: {} relative error: {}".format(self.mfs.nsrc, rel_error))
+
         self.boundsep = boundsep
         self.nsrc_schedule = nsrc_schedule
 
@@ -240,7 +241,7 @@ class Simulation:
     def update_source_term(self, new_pos_src):
         self.mfs.update_source_term(new_pos_src)
 
-    def simulate_freq(self, ind):
+    def simulate_freq(self, ind, verbose=False):
         t1 = time.time()
 
         mfs_tmp = HelmholtzMFS(room_bound=self.mfs.room_bound, virtual_bound=self.vpos[self.freq_ref[ind]],
@@ -248,7 +249,8 @@ class Simulation:
                                cond=self.mfs.cond, beta=self.mfs.beta, add_fun=self.mfs.add_fun)
         mfs_tmp.mfs_fit(k=self.wave_numbers[ind], solver="lstsq")
         t2 = time.time()
-        print("simulating frequency {}; time {} s; {} sources".format(self.freqs[ind], t2-t1, mfs_tmp.nsrc))
+        if verbose:
+            print("simulating frequency {}; time {} s; {} sources".format(self.freqs[ind], t2-t1, mfs_tmp.nsrc))
         return mfs_tmp.ampl
 
     def compute_freq(self, compute_points, ind, verbose=False, use_src=True):
@@ -263,7 +265,7 @@ class Simulation:
         res = mfs_tmp.evaluate_sol(compute_points, self.wave_numbers[ind], use_src=use_src)
 
         t2 = time.time()
-        print("time {} s".format(t2 - t1))
+        #print("time {} s".format(t2 - t1))
 
         return res
 
@@ -283,25 +285,41 @@ class Simulation:
 
         return mfs_tmp.evaluate_grad(compute_points, self.wave_numbers[ind], use_src=use_src)
 
-    def simulate(self, nworkers=1):
+    def evaluate_error(self, freq_ind, nb_error_points=None):
+        if nb_error_points is None:
+            nb_error_points = len(self.mfs.room_bound)*1.1
+        k = self.wave_numbers[freq_ind]
+        error_points, _, error_ids = self.poly.sample(nb_error_points, min_dist=0.005)
+        mfs_tmp = HelmholtzMFS(room_bound=self.mfs.room_bound, virtual_bound=self.vpos[self.freq_ref[freq_ind]],
+                               pos_src=self.mfs.pos_src, poly=self.poly, cond=self.mfs.cond,
+                               beta=self.mfs.beta, ampl=self.ampl[freq_ind],
+                               add_fun=self.mfs.add_fun, src_ampl=self.src_ampl[:, freq_ind])
+
+        mfs_val = mfs_tmp.boundary_operator(error_points, error_ids, k)
+        src_val = - mfs_tmp.boundary_operator(error_points, error_ids, k, use_src=True)
+        rel_error = np.sqrt(np.sum((np.abs(mfs_val - src_val)) ** 2)) / np.linalg.norm(src_val)
+        return rel_error
+
+    def simulate(self, nworkers=1, verbose=True):
         """Compute the solution coefficients at each frequency using nworkers processes."""
         t1 = time.time()
         ind_comp = np.where(~self.simulated)[0]
         if nworkers == 1:  # 1 frequency at a time
             for ind in ind_comp:
-                self.ampl[ind] = self.simulate_freq(ind)
+                self.ampl[ind] = self.simulate_freq(ind, verbose=verbose)
         else:
             if nworkers < 0:
                 # use all available cores
                 pool = mp.Pool()
             else:
                 pool = mp.Pool(processes=nworkers)
-            ampl = pool.map(self.simulate_freq, ind_comp)
+            partfunc = partial(self.simulate_freq, verbose=verbose)
+            ampl = pool.map(partfunc, ind_comp)
             pool.close()
             for i, ind in enumerate(ind_comp):
                 self.ampl[ind] = ampl[i]
-
-        print("total simulation time : {} s".format(time.time()-t1))
+        if verbose:
+            print("total simulation time : {} s".format(time.time()-t1))
 
     def compute(self, compute_points, nworkers=1, tol=0., non_conv=False, check_in=True, use_src=True, verbose=False):
         """Compute the solution at the given points (shape (npoints, d)) at all frequencies, returns a tuple

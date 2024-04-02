@@ -196,30 +196,30 @@ class Polygon:
         self.polar_angles = mod2pi(np.arctan2(self.edges[:, 1], self.edges[:, 0]))
 
     def update_param(self, new_projs, new_origin=None):
+        if new_origin is not None:
+            self.origin = new_origin
+
         self.projs = new_projs
         self.distances = np.linalg.norm(new_projs - self.origin, axis=1)
         self.nedges = len(self.projs)
         self.normals = new_projs - self.origin
         self.normals /= np.linalg.norm(self.normals, axis=1)[:, np.newaxis]
 
-        rotated_normals = np.stack([-self.normals[:, 1], self.normals[:, 0]], axis=1)
-        point_pair = np.stack([new_projs, new_projs + rotated_normals], axis=1)
-
         # compute every possible intersections between the lines defined by the normals
         intersections = []
         for i in range(self.nedges):
-            tmp = compute_intersections(point_pair[i], point_pair[i+1:])
+            tmp = compute_intersections(new_projs[i], self.normals[i], new_projs[i+1:], self.normals[i+1:])
             intersections.append(tmp[np.isfinite(tmp[:, 0])])
 
         intersections = np.concatenate(intersections, axis=0)
 
         self.vertices = intersections[self.is_in(intersections, tol=1e-6)]
-
-        if new_origin is not None:
-            self.origin = new_origin
-        else:
-            self.origin = np.mean(self.vertices, axis=0)
         self.distances = np.linalg.norm(self.vertices - self.origin, axis=1)
+        if len(self.vertices) > self.nedges:
+            raise ValueError("The number of vertices should not exceed the number of half-planes")
+        elif len(self.vertices) < self.nedges:
+            print("Warning: some half-planes do not intersect, {} < {} edges found.".format(len(self.vertices),
+                                                                                            self.nedges))
 
         self.update_vertices(self.vertices, sort=True)  # to ensure indexation is correct
 
@@ -431,25 +431,17 @@ def gmsh_sampling(vertices, mesh_size):
     return mesh.points, mesh.cells_dict["triangle"]
 
 
-def compute_intersections(d1, d2, tol=1e-6):
-    """Compute intersections between line d1 to lines d2, defined by two points each.
-    Assume d1 of shape (2, 2), and d2 are of shape (nlines, 2, 2). Last axis gives the coordinates of the two points.
-    Returns an array of shape (nlines, 2) giving the coordinates of the intersections."""
-    if d2.ndim == 2:
-        d2 = d2[np.newaxis, :, :]
-
-    denom = ((d1[0, 0] - d1[1, 0]) * (d2[:, 0, 1] - d2[:, 1, 1]) - (d1[0, 1] - d1[1, 1]) * (d2[:, 0, 0] - d2[:, 1, 0]))
-    res = np.zeros((d2.shape[0], 2))
-    ind_nan = np.abs(denom) < tol
-    ind_finite = ~ind_nan
-    res[ind_nan] = np.nan
-    denom = denom[ind_finite]
-
-    num1 = (d1[0, 0] * d1[1, 1] - d1[0, 1] * d1[1, 0])
-    num2 = (d2[ind_finite, 0, 0] * d2[ind_finite, 1, 1] - d2[ind_finite, 0, 1] * d2[ind_finite, 1, 0])
-    # shape (nlines,)
-    x = ((num1 * (d2[ind_finite, 0, 0] - d2[ind_finite, 1, 0]) - (d1[0, 0] - d1[1, 0]) * num2) / denom)
-    y = ((num1 * (d2[ind_finite, 0, 1] - d2[ind_finite, 1, 1]) - (d1[0, 1] - d1[1, 1]) * num2) / denom)
-    res[ind_finite] = np.stack([x, y], axis=1)
-
+def compute_intersections(p1, vector1, p2, vectors2, tol=1e-6):
+    """Compute the intersection between a line defined by a point and a vector and a set of lines defined by points
+    and vectors. Return the intersection points."""
+    dotprod1 = np.sum(p1*vector1)
+    dotprods2 = np.sum(p2*vectors2, axis=1)  # shape (n, 2)
+    crossprod = vector1[0]*vectors2[:, 1] - vector1[1]*vectors2[:, 0]  # shape (n,), determinant of the matrix
+    indnan = np.abs(crossprod) < tol
+    indfinite = np.logical_not(indnan)
+    crossprod = np.where(indnan, np.nan, crossprod)
+    res = np.zeros([len(p2), 2])
+    res[indnan] = np.nan
+    res[indfinite, 0] = (dotprod1*vectors2[indfinite, 1] - dotprods2[indfinite]*vector1[1]) / crossprod[indfinite]
+    res[indfinite, 1] = (-dotprod1*vectors2[indfinite, 0] + dotprods2[indfinite]*vector1[0]) / crossprod[indfinite]
     return res

@@ -212,6 +212,11 @@ class Simulation:
             self.mfs.update_boundary(SampledBoundary(self.poly, self.boundsep, 
                                                      min_dist=self.min_dist, dx=0))
 
+    def load(self, room_bound, vpos, ampl):
+        self.mfs.update_boundary(room_bound)
+        self.vpos = vpos
+        self.ampl = ampl
+
     def update_poly(self, new_vert, new_virt_vert=None, parametrization="vertices"):
         if parametrization == "vertices":
             self.poly.update_vertices(new_vert)

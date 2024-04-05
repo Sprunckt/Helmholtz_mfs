@@ -143,6 +143,7 @@ class Simulation:
         error_points, _, error_ids = self.poly.sample(error_sep, sample_type="separation", min_dist=min_dist)
         print("Number of error points: ", len(error_points))
         for i, indfreq in enumerate(nsrc_schedule["sample_marks"]):
+            print("simulating frequency ", self.freqs[indfreq])
             k = 2 * np.pi * self.freqs[indfreq] / c  # update wave number
             self.mfs.src_ampl = self.src_ampl[:, indfreq]
             # simulate at each mark frequency, increase number of sources until error is below threshold
@@ -191,7 +192,7 @@ class Simulation:
             self.simulated[indfreq] = True
             t2 = time.time()
 
-            print("simulating frequency {}; time {} s".format(self.freqs[indfreq], t2-t1))
+            print("time {} s".format(t2-t1))
             print("number of sources: {} relative error: {}".format(self.mfs.nsrc, rel_error))
 
         self.boundsep = boundsep
@@ -270,7 +271,8 @@ class Simulation:
         res = mfs_tmp.evaluate_sol(compute_points, self.wave_numbers[ind], use_src=use_src)
 
         t2 = time.time()
-        #print("time {} s".format(t2 - t1))
+        if verbose:
+            print("time {} s".format(t2 - t1))
 
         return res
 

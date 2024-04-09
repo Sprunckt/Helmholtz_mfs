@@ -43,50 +43,58 @@ class ShapeOptimizer:
         self.counter = {"ncall": 0}
 
     def get_params(self, parametrization):
-        if parametrization == "half-planes":
-            return self.sim_p.poly.projs
-        elif parametrization == "vertices":
-            return self.sim_p.poly.vertices
-        else:
-            raise ValueError("unknown parametrization, accepted values:, 'half-planes', 'vertices'")
+        return self.sim_p.poly.get_params(parametrization)
+        
+    def line_search(self, step, step_decrease, neval_search, grad, parametrization, bounds=None,
+                    early_stopping=False, reset=False, verbose=False):
+        if bounds is None:
+            bounds = (-10., 10.)
 
-    def line_search(self, step, step_decrease, neval_search, grad, parametrization,
-                    early_stopping=False, verbose=False):
         curr_params = self.get_params(parametrization)
-        best_cost = self.cost_fun()
-        best_weights = self.sim_p.vpos.copy(), self.sim_p.ampl.copy()
-        curr_step = step
+        best_params = curr_params
+        best_cost = np.inf
+        start_cost = self.cost_fun()
+        best_weights = self.sim_p.mfs.room_bound.copy(), self.sim_p.vpos.copy(), self.sim_p.ampl.copy()
+        curr_step, best_step = step, step
 
         for i in range(neval_search):
+            new_params = curr_params - curr_step*grad
+            if verbose:
+                print("step: ", curr_step)#, "new params: ", new_params)
+            success = self.update_sim(new_params, update_state=True, update_adjoint=False, parametrization=parametrization, bounds=bounds)  
             curr_step = curr_step * step_decrease
-            new_params = curr_params[0] - curr_step*grad
-            self.update_sim(new_params, update_adjoint=False, parametrization=parametrization)  # todo:check if poly is ok
+
+            if not success:
+                print("Polygon update failed, skipping")
+                continue
+
             new_cost = self.cost_fun()
             if verbose:
-                print("step: ", curr_step, "cost: ", new_cost)
+                print("cost: ", new_cost)
 
             if new_cost < best_cost:
                 best_cost = new_cost
-                best_weights = self.sim_p.mfs.room_bound, self.sim_p.vpos.copy(), self.sim_p.ampl.copy()
-                if early_stopping:
+                best_weights = self.sim_p.mfs.room_bound.copy(), self.sim_p.vpos.copy(), self.sim_p.ampl.copy()
+                best_params, best_step = new_params.copy(), curr_step
+                if early_stopping and best_cost < start_cost:
                     if verbose:
                         print("costfunction decreased, early stopping")
                     break
 
         self.sim_p.load(*best_weights)
-        return best_cost
+        self.update_sim(best_params, update_state=False, update_adjoint=False, parametrization=parametrization)
+        self._update_adjoint()
+        if reset:
+            best_step = step
+        return best_cost, best_step
 
     def fit(self, niter=100, jtol=1e-5, gtol=1e-6, step=1e-3, alternate=False, neval_search=3, step_decrease=0.85,
-            parametrization="half-planes"):
+            parametrization="half-planes", early_stopping=True, reset_step=False):
         log = dict(cost=[self.cost_fun()], grad=[], vert=[self.sim_p.poly.vertices.copy()])
-        if parametrization == "half-planes":
-            gradfun = self.partial_derivative_proji
-        elif parametrization == "vertices":
-            gradfun = self.partial_derivative
-        else:
-            raise ValueError("unknown parametrization, accepted values:, 'half-planes', 'vertices'")
+        gradfun = self._get_gradfun(parametrization)
 
         it, cost, gradcost, rotation_ind = 0, np.inf, np.inf, 0
+        print("initial cost:", self.cost_fun())
         while it < niter and jtol < cost and gtol < gradcost:
             t1 = time.time()
             grad = np.zeros((len(self.sim_p.poly.vertices), 2))
@@ -95,23 +103,27 @@ class ShapeOptimizer:
             else:
                 for i in range(len(self.sim_p.poly.vertices)):
                     grad[i] = gradfun(i)
+                    
             tgrad = time.time() - t1
 
-            # reduce step size until cost function decreases
-            cost = self.line_search(step, step_decrease, neval_search, grad, parametrization, verbose=self.verbose)
-            self._update_adjoint()
+            if self.verbose:
+                print("it: ", it, "descent ind: ", rotation_ind)
+                print("grad: ", grad)
 
+            # reduce step size until cost function decreases
+            cost, step = self.line_search(step, step_decrease, neval_search, grad, parametrization, 
+                                          verbose=self.verbose, early_stopping=early_stopping, reset=reset_step)
+            
             gradcost = np.linalg.norm(grad)
+
             log["cost"].append(cost)
             log["grad"].append(grad)
             log["vert"].append(self.sim_p.poly.vertices.copy())
             t2 = time.time()
             if self.verbose:
                 # print("rel_error: ", self.sim_p.evaluate_error(freq_ind=-1))
-                print("it: ", it, "descent ind: ", rotation_ind)
-                print("cost: ", cost, "grad_norm: ", gradcost, "ind_desc: ", rotation_ind, 
+                print("cost k: ", cost, "grad_norm k-1: ", gradcost, "ind_desc: ", rotation_ind, 
                       "tgrad: ", tgrad, "titer: ", t2-t1)
-                print("grad: ", grad)
                 print("current polygon: \n", self.sim_p.poly.vertices)
                 print("mics in poly: ", self.sim_p.poly.is_in(self.mic_pos))
                 print("source in poly: ", self.sim_p.poly.is_in(self.source_pos.reshape([-1, 2])))
@@ -158,15 +170,19 @@ class ShapeOptimizer:
                                                                               self.sim_p.poly.normals[i - 1],
                                                                               axis=-1))  # dn p * q.conj
 
-    def update_sim(self, new_vertices=None, update_adjoint=True, parametrization="vertices"):
+    def update_sim(self, new_vertices=None, update_state=True, update_adjoint=True, parametrization="vertices", bounds=None):
         if new_vertices is not None:
-            self.sim_p.update_poly(new_vertices, parametrization=parametrization)
-            self.sim_q.update_poly(new_vertices, parametrization=parametrization)
+            success = self.sim_p.update_poly(new_vertices, parametrization=parametrization, bounds=bounds)
+            self.sim_q.update_poly(new_vertices, parametrization=parametrization, bounds=bounds)
+        else:
+            success = True
 
-        self._update_state()
+        if update_state:
+            self._update_state()
         if update_adjoint:
             self._update_adjoint()
-
+        return success
+        
     def evaluate_directional_derivative(self, V, V_corners):
         # shape derivative in direction of the vector field V (shape (n_int, 2))
         normals = self.sim_p.poly.normals[self.quad_ids]
@@ -246,6 +262,39 @@ class ShapeOptimizer:
 
         return 0.5*np.sum(np.real(self.diffs*self.diffs.conj())) / self.nmics
 
+    def cost_fun_full(self, verbose=False):
+        self.counter["ncall"] += 1
+        if verbose:
+            print("{} calls".format(self.counter["ncall"]))
+
+        return 0.5*np.real(self.diffs*self.diffs.conj())
+
+    def _get_gradfun(self, parametrization):
+        if parametrization == "half-planes":
+            gradfun = self.partial_derivative_proji
+        elif parametrization == "vertices":
+            gradfun = self.partial_derivative
+        else:
+            raise ValueError("unknown parametrization, accepted values:, 'half-planes', 'vertices'")
+        return gradfun 
+    
+    def get_gradient(self, parametrization):
+        gradfun = self._get_gradfun(parametrization)
+        grad = np.zeros((len(self.sim_p.poly.vertices), 2))
+
+        for i in range(len(self.sim_p.poly.vertices)):
+            grad[i] = gradfun(i)
+        return grad 
+
+    def evaluate_costfun_dir(self, direction, parametrization, step, nb_step):
+        res = np.zeros(nb_step)
+        params = self.get_params(parametrization)
+        for i in range(nb_step):
+            print("step {}, displacement {}".format(i, step*(i+1)))
+            params = params + step*direction 
+            self.update_sim(params, parametrization=parametrization, update_adjoint=False, update_state=True)
+            res[i] = self.cost_fun()
+        return res
 
 if __name__ == '__main__':
     import matplotlib.pyplot as plt

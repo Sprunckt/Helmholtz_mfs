@@ -5,6 +5,7 @@ from shapely.geometry import Polygon as ShapelyPolygon
 from shapely.geometry import Point as ShapelyPoint
 import pygmsh
 from scipy.integrate import simps
+from scipy.spatial import ConvexHull
 
 c = 343
 
@@ -164,6 +165,14 @@ class Polygon:
     def get_normal(self, edge_id):
         return self.normals[edge_id]
 
+    def get_params(self, parametrization):
+        if parametrization == "vertices":
+            return self.vertices 
+        elif parametrization == "half-planes":
+            return self.projs 
+        else:
+            raise ValueError("unknown parametrization, accepted values:, 'half-planes', 'vertices'")
+
     def compute_angles(self, points):
         """Compute polar angles of points with respect to the vertices of the polygon, using the next edge (in
         trigonometric order) as polar axis. Return angles and vectors from vertices to points."""
@@ -195,7 +204,11 @@ class Polygon:
         # compute polar angles of each edge with respect to the x-axis assuming origin is a vertex, in [-2, -2+2pi]
         self.polar_angles = mod2pi(np.arctan2(self.edges[:, 1], self.edges[:, 0]))
 
-    def update_param(self, new_projs, new_origin=None):
+    def update_param(self, new_projs, new_origin=None, bounds=None):
+        if bounds is not None:
+            if not np.all((bounds[0] < new_projs) &  (new_projs < bounds[1])):
+                return False 
+
         if new_origin is not None:
             self.origin = new_origin
 
@@ -222,13 +235,18 @@ class Polygon:
                                                                                             self.nedges))
 
         self.update_vertices(self.vertices, sort=True)  # to ensure indexation is correct
-
+        return True
+        
     def sort_vertices(self):
         """Sort vertices in trigonometric order"""
         angles = mod2pi(np.arctan2(self.vertices[:, 1] - self.origin[1], self.vertices[:, 0] - self.origin[0]))
         self.vertices = self.vertices[np.argsort(angles)]
 
-    def update_vertices(self, new_vert, sort=False):
+    def update_vertices(self, new_vert, sort=False, bounds=None):
+        if bounds is not None:
+            if not np.all((bounds[0] < new_vert) &  (new_vert < bounds[1])):
+                return False 
+
         self.vertices = new_vert
         if sort:
             self.sort_vertices()
@@ -244,6 +262,7 @@ class Polygon:
                                 (np.roll(self.vertices[:, 1], -1, axis=0) - self.vertices[:, 1]) *
                                 (self.vertices[:, 0] - self.origin[0])) / self.lengths
         self.projs = self.origin + self.normals * self.distances[:, np.newaxis]
+        return True
 
     def is_in(self, points, min_dist=0., tol=1e-6):
         """Return an array of booleans indicating whether each point is inside the (convex) polygon."""
@@ -264,6 +283,10 @@ class Polygon:
             mask = quad_ids == i
             res += self.integrate_edge(vals[mask], quad_nodes[mask], i)
         return res
+
+    def convex_projection(self):
+        """Update the polygon to its convex hull."""
+        self.update_vertices(self.vertices[ConvexHull(self.vertices).vertices])
 
     def plot(self):
         plt.plot(self.vertices[:, 0], self.vertices[:, 1], 'x')

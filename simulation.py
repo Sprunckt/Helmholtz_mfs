@@ -5,7 +5,6 @@ import multiprocessing as mp
 import time
 from scipy import signal
 from functools import partial
-from scipy.spatial import ConvexHull
 
 
 class Simulation:
@@ -52,7 +51,8 @@ class Simulation:
                 if poly_virt is not None:
                     self.poly_virt = poly_virt
                 elif convexify:
-                    self.poly_virt = ExtrudedPolygon(vertices[ConvexHull(vertices).vertices], height)
+                    print("Convex projection for 3d polyhedras unsupported")
+                    exit(-1)
                 else:
                     self.poly_virt = self.poly
             else:  # cuboid
@@ -64,7 +64,7 @@ class Simulation:
             if poly_virt is not None:
                 self.poly_virt = poly_virt
             elif convexify:
-                self.poly_virt = Polygon(vertices[ConvexHull(vertices).vertices])
+                self.poly_virt.convex_projection()
             else:
                 self.poly_virt = self.poly
 
@@ -218,31 +218,36 @@ class Simulation:
         self.vpos = vpos
         self.ampl = ampl
 
-    def update_poly(self, new_vert, new_virt_vert=None, parametrization="vertices"):
+    def update_poly(self, new_vert, new_virt_vert=None, parametrization="vertices", bounds=None):
         if parametrization == "vertices":
-            self.poly.update_vertices(new_vert)
+            success = self.poly.update_vertices(new_vert, bounds=bounds)
             if new_virt_vert is not None:
-                self.poly_virt.update_vertices(new_virt_vert)
+                self.poly_virt.update_vertices(new_virt_vert, bounds=bounds)
             elif self.convexify:
                 if self.d == 2:
-                    self.poly_virt = Polygon(self.poly.vertices[ConvexHull(self.poly.vertices).vertices])
+                    self.poly_virt.convex_projection()   # todo: ensure poly_virt is always a copy of self.poly for convexify
                 else:
-                    self.poly_virt = ExtrudedPolygon(self.poly.vertices[ConvexHull(self.poly.vertices).vertices],
-                                                     self.height)
+                    print("Convex projection for 3d polyhedras unsupported")
+                    exit(-1)
             else:
-                self.poly_virt = self.poly
+                self.poly_virt = self.poly  
         elif parametrization == "half-planes":
-            self.poly.update_param(new_vert)
+            success = self.poly.update_param(new_vert, bounds=bound)
             if new_virt_vert is not None:
-                self.poly_virt = self.poly_virt.update_param(new_virt_vert)
+                success = self.poly_virt.update_param(new_virt_vert, bounds=bound)
             elif self.convexify:
                 if self.d == 2:
-                    self.poly_virt = Polygon(self.poly.vertices[ConvexHull(self.poly.vertices).vertices])
+                    self.poly_virt = Polygon(self.poly.vertices)
+                    self.poly_virt.convex_projection()
                 else:
-                    self.poly_virt = ExtrudedPolygon(self.poly.vertices[ConvexHull(self.poly.vertices).vertices],
-                                                     self.poly.height)
-        self.mfs.poly = self.poly
-        self._resample()
+                    print("Convex projection for 3d polyhedras unsupported")
+                    exit(-1)
+        if success:
+            self.mfs.poly = self.poly
+            self._resample()
+        else:
+            print("Failure to update the polygon")
+        return success
 
     def update_source_term(self, new_pos_src):
         self.mfs.update_source_term(new_pos_src)

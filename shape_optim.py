@@ -24,13 +24,10 @@ class ShapeOptimizer:
         self.observations = measurements  # shape len(freqs)
         self.diffs = np.full(nfreq, np.inf, dtype=complex)
         self.n_int = n_int  # number of quadrature points on the boundary
-        self.quad_points, _, self.quad_ids, self.quad_nodes = self.sim_p.poly.sample(self.n_int, return_nodes=True,
-                                                                                     min_dist=0.)
 
+        self.quad_points, self.quad_ids, self.quad_nodes = None, None, None
         self.quad_intervals = np.zeros([self.sim_p.poly.nedges, 2], dtype=int)
-        interv = np.where(np.diff(self.quad_ids) != 0)[0]
-        self.quad_intervals[0], self.quad_intervals[-1] = [0, interv[0]], [interv[-1]+1, len(self.quad_ids)-1]
-        self.quad_intervals[1:-1] = np.stack([interv[:-1]+1, interv[1:]], axis=1)
+        self._update_quadrature_points()
 
         self.p_values = np.zeros((self.n_int, nfreq), dtype=complex)
         self.q_values = np.zeros((self.n_int, nfreq), dtype=complex)
@@ -60,8 +57,9 @@ class ShapeOptimizer:
         for i in range(neval_search):
             new_params = curr_params - curr_step*grad
             if verbose:
-                print("step: ", curr_step)#, "new params: ", new_params)
-            success = self.update_sim(new_params, update_state=True, update_adjoint=False, parametrization=parametrization, bounds=bounds)  
+                print("step: ", curr_step)
+            success = self.update_sim(new_params, update_state=True, update_adjoint=False,
+                                      parametrization=parametrization, bounds=bounds)
             curr_step = curr_step * step_decrease
 
             if not success:
@@ -80,13 +78,19 @@ class ShapeOptimizer:
                     if verbose:
                         print("costfunction decreased, early stopping")
                     break
-
-        self.sim_p.load(*best_weights)
         self.update_sim(best_params, update_state=False, update_adjoint=False, parametrization=parametrization)
+        self.sim_p.load(*best_weights)
         self._update_adjoint()
         if reset:
             best_step = step
         return best_cost, best_step
+
+    def _update_quadrature_points(self):
+        self.quad_points, _, self.quad_ids, self.quad_nodes = self.sim_p.poly.sample(self.n_int, return_nodes=True,
+                                                                                     min_dist=0.)
+        interv = np.where(np.diff(self.quad_ids) != 0)[0]
+        self.quad_intervals[0], self.quad_intervals[-1] = [0, interv[0]], [interv[-1] + 1, len(self.quad_ids) - 1]
+        self.quad_intervals[1:-1] = np.stack([interv[:-1] + 1, interv[1:]], axis=1)
 
     def fit(self, niter=100, jtol=1e-5, gtol=1e-6, step=1e-3, alternate=False, neval_search=3, step_decrease=0.85,
             parametrization="half-planes", early_stopping=True, reset_step=False):
@@ -174,6 +178,7 @@ class ShapeOptimizer:
         if new_vertices is not None:
             success = self.sim_p.update_poly(new_vertices, parametrization=parametrization, bounds=bounds)
             self.sim_q.update_poly(new_vertices, parametrization=parametrization, bounds=bounds)
+            self._update_quadrature_points()
         else:
             success = True
 

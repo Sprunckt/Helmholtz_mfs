@@ -5,6 +5,7 @@ import multiprocessing as mp
 import time
 from scipy import signal
 from functools import partial
+import matplotlib.pyplot as plt
 
 
 class Simulation:
@@ -100,6 +101,7 @@ class Simulation:
             nsrc_schedule["sample_marks"] = np.concatenate([nsrc_schedule["sample_marks"], [len(self.freqs) - 1]])
         if nsrc_schedule["method"] == "per_wavelength":
             nsrc_schedule["sep"] = np.zeros(len(nsrc_schedule["sample_marks"]))
+
         for i in range(len(nsrc_schedule["sample_marks"])):  # sample virtual boundary for each mark
             if nsrc_schedule["method"] == "per_wavelength":
                 nsrc_schedule["sep"][i] = c / self.freqs[nsrc_schedule["sample_marks"][i]] / \
@@ -444,3 +446,12 @@ class Simulation:
 
             res_grad[:, i, :, :] = mfs_tmp.evaluate_corner_der(self.wave_numbers[i], use_src=use_src)
         return res, res_grad
+
+    def plot_bound_values(self, nplot):
+        for i in range(1, self.nfreqs):
+            mfs_tmp = HelmholtzMFS(room_bound=self.mfs.room_bound, virtual_bound=self.vpos[self.freq_ref[i]],
+                                   pos_src=self.mfs.pos_src, poly=self.poly, cond=self.mfs.cond,
+                                   beta=self.mfs.beta, ampl=self.ampl[i],
+                                   add_fun=self.mfs.add_fun, src_ampl=self.src_ampl[:, i])
+            mfs_tmp.plot_bound_values(nplot, self.wave_numbers[i], show=False)
+        plt.show()

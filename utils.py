@@ -204,7 +204,7 @@ class Polygon:
         # compute polar angles of each edge with respect to the x-axis assuming origin is a vertex, in [-2, -2+2pi]
         self.polar_angles = mod2pi(np.arctan2(self.edges[:, 1], self.edges[:, 0]))
 
-    def update_param(self, new_projs, new_origin=None, bounds=None):
+    def update_param(self, new_projs, new_origin=None, bounds=None, check_in=None):
         if bounds is not None:
             if not np.all((bounds[0] < new_projs) &  (new_projs < bounds[1])):
                 return False 
@@ -234,24 +234,32 @@ class Polygon:
             print("Warning: some half-planes do not intersect, {} < {} edges found.".format(len(self.vertices),
                                                                                             self.nedges))
 
-        self.update_vertices(self.vertices, sort=True)  # to ensure indexation is correct
-        return True
+        success = self.update_vertices(self.vertices, sort=True)  # to ensure indexation is correct
+
+        if check_in is not None:  # check if the points are in. 
+            if not np.all(self.is_in(check_in)):
+                return False 
+
+        return success
         
     def sort_vertices(self):
         """Sort vertices in trigonometric order"""
         angles = mod2pi(np.arctan2(self.vertices[:, 1] - self.origin[1], self.vertices[:, 0] - self.origin[0]))
         self.vertices = self.vertices[np.argsort(angles)]
 
-    def update_vertices(self, new_vert, sort=False, bounds=None):
+    def update_vertices(self, new_vert, sort=False, bounds=None, check_in=None, convex_proj=False):
         if bounds is not None:
             if not np.all((bounds[0] < new_vert) &  (new_vert < bounds[1])):
                 return False 
+        if convex_proj:
+            new_vert = new_vert[ConvexHull(new_vert).vertices]
 
         self.vertices = new_vert
         if sort:
             self.sort_vertices()
         if len(self.vertices) < 3:
-            raise ValueError("Number of vertices should exceed 2")
+            print("Number of vertices should exceed 2")
+            return False
         self._update_edges_and_angles()
         self.normals = np.stack([self.edges[:, 1], -self.edges[:, 0]], axis=1)
         self.normals /= np.linalg.norm(self.normals, axis=1)[:, np.newaxis]
@@ -262,6 +270,11 @@ class Polygon:
                                 (np.roll(self.vertices[:, 1], -1, axis=0) - self.vertices[:, 1]) *
                                 (self.vertices[:, 0] - self.origin[0])) / self.lengths
         self.projs = self.origin + self.normals * self.distances[:, np.newaxis]
+
+        if check_in is not None:
+            if not np.all(self.is_in(check_in)):
+                return False 
+
         return True
 
     def is_in(self, points, min_dist=0., tol=1e-6):

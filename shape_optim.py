@@ -3,6 +3,23 @@ import numpy as np
 import time
 
 
+def array_to_list(arr):
+    """Converts arr to a list if arr is an ndarray, leave as it is otherwise."""
+    if type(arr) == np.ndarray:
+        return arr.tolist()
+    else:
+        return arr
+
+
+def dict_to_json(dico, path):
+    dd = dico.copy()
+    for key in dd:
+        dd[key] = array_to_list(dd[key])
+    fd = open(path, 'w')
+    json.dump(dd, fd)
+    fd.close()
+
+
 class ShapeOptimizer:
     def __init__(self, init_vertices: np.ndarray, fs: float, nfreq: int, source_pos: np.ndarray, mic_pos: np.ndarray,
                  measurements: np.ndarray, dx: float, nprocess=1, n_int=1000, origin=None,
@@ -42,8 +59,8 @@ class ShapeOptimizer:
     def get_params(self, parametrization):
         return self.sim_p.poly.get_params(parametrization)
         
-    def line_search(self, step, step_decrease, neval_search, grad, parametrization, bounds=None,
-                    early_stopping=False, reset=False, verbose=False):
+    def line_search(self, step, step_decrease, neval_search, grad, parametrization, bounds=None, convex_proj=False,
+                    early_stopping=False, reset=False, in_constraints=None, verbose=False):
         if bounds is None:
             bounds = (-10., 10.)
 
@@ -53,24 +70,27 @@ class ShapeOptimizer:
         start_cost = self.cost_fun()
         best_weights = self.sim_p.mfs.room_bound.copy(), self.sim_p.vpos.copy(), self.sim_p.ampl.copy()
         curr_step, best_step = step, step
+        init_decrease = False  # True if costfun decreases at first step 
 
         for i in range(neval_search):
             new_params = curr_params - curr_step*grad
             if verbose:
                 print("step: ", curr_step)
-            success = self.update_sim(new_params, update_state=True, update_adjoint=False,
-                                      parametrization=parametrization, bounds=bounds)
+            success = self.update_sim(new_params, update_state=True, update_adjoint=False, convex_proj=convex_proj,
+                                      parametrization=parametrization, bounds=bounds, check_in=in_constraints, allow_reduce=False)
             curr_step = curr_step * step_decrease
 
             if not success:
                 print("Polygon update failed, skipping")
                 continue
-
+            
             new_cost = self.cost_fun()
             if verbose:
                 print("cost: ", new_cost)
 
             if new_cost < best_cost:
+                if i == 0:
+                    init_decrease = True
                 best_cost = new_cost
                 best_weights = self.sim_p.mfs.room_bound.copy(), self.sim_p.vpos.copy(), self.sim_p.ampl.copy()
                 best_params, best_step = new_params.copy(), curr_step
@@ -83,7 +103,7 @@ class ShapeOptimizer:
         self._update_adjoint()
         if reset:
             best_step = step
-        return best_cost, best_step
+        return best_cost, best_step, init_decrease
 
     def _update_quadrature_points(self):
         self.quad_points, _, self.quad_ids, self.quad_nodes = self.sim_p.poly.sample(self.n_int, return_nodes=True,
@@ -93,11 +113,14 @@ class ShapeOptimizer:
         self.quad_intervals[1:-1] = np.stack([interv[:-1] + 1, interv[1:]], axis=1)
 
     def fit(self, niter=100, jtol=1e-5, gtol=1e-6, step=1e-3, alternate=False, neval_search=3, step_decrease=0.85,
-            parametrization="half-planes", early_stopping=True, reset_step=False):
-        log = dict(cost=[self.cost_fun()], grad=[], vert=[self.sim_p.poly.vertices.copy()])
+            parametrization="half-planes", early_stopping=True, reset_step=False, decrease_period=10, convex_proj=False,
+            save_path=None, save_freq=20):
+        log = dict(cost=[self.cost_fun()], grad=[], vert=[self.sim_p.poly.vertices.tolist()])
         gradfun = self._get_gradfun(parametrization)
 
-        it, cost, gradcost, rotation_ind = 0, np.inf, np.inf, 0
+        in_constraints = np.concatenate([self.mic_pos, self.source_pos], axis=0)
+
+        it, cost, gradcost, rotation_ind, decrease_ind = 0, np.inf, np.inf, 0, 0
         print("initial cost:", self.cost_fun())
         while it < niter and jtol < cost and gtol < gradcost:
             t1 = time.time()
@@ -115,24 +138,36 @@ class ShapeOptimizer:
                 print("grad: ", grad)
 
             # reduce step size until cost function decreases
-            cost, step = self.line_search(step, step_decrease, neval_search, grad, parametrization, 
-                                          verbose=self.verbose, early_stopping=early_stopping, reset=reset_step)
+            cost, step, init_decreased = self.line_search(step, step_decrease, neval_search, grad, parametrization, 
+                                                          verbose=self.verbose, early_stopping=early_stopping, reset=reset_step,
+                                                          in_constraints=in_constraints, convex_proj=convex_proj)
+
+            if init_decreased:
+                decrease_ind = 0  # reset counter, cost function has decreased at first it of line search
+            else:
+                decrease_ind += 1
+
+                if decrease_ind == decrease_period:
+                    step *= step_decrease
             
             gradcost = np.linalg.norm(grad)
 
             log["cost"].append(cost)
-            log["grad"].append(grad)
-            log["vert"].append(self.sim_p.poly.vertices.copy())
+            log["grad"].append(grad.tolist())
+            log["vert"].append(self.sim_p.poly.vertices.tolist())
             t2 = time.time()
             if self.verbose:
                 # print("rel_error: ", self.sim_p.evaluate_error(freq_ind=-1))
                 print("cost k: ", cost, "grad_norm k-1: ", gradcost, "ind_desc: ", rotation_ind, 
                       "tgrad: ", tgrad, "titer: ", t2-t1)
                 print("current polygon: \n", self.sim_p.poly.vertices)
-                print("mics in poly: ", self.sim_p.poly.is_in(self.mic_pos))
-                print("source in poly: ", self.sim_p.poly.is_in(self.source_pos.reshape([-1, 2])))
+                # print("mics in poly: ", self.sim_p.poly.is_in(self.mic_pos))
+                # print("source in poly: ", self.sim_p.poly.is_in(self.source_pos.reshape([-1, 2])))
             rotation_ind = (rotation_ind + 1) % self.sim_p.poly.nedges 
             it += 1
+
+            if (save_path is not None) and (it % save_freq == 0):
+                dict_to_json(log, save_path)
 
         return self.sim_p.poly.vertices, log
 
@@ -174,18 +209,26 @@ class ShapeOptimizer:
                                                                               self.sim_p.poly.normals[i - 1],
                                                                               axis=-1))  # dn p * q.conj
 
-    def update_sim(self, new_vertices=None, update_state=True, update_adjoint=True, parametrization="vertices", bounds=None):
+    def update_sim(self, new_vertices=None, update_state=True, update_adjoint=True, 
+    parametrization="vertices", bounds=None, check_in=None, convex_proj=False, allow_reduce=False):
         if new_vertices is not None:
-            success = self.sim_p.update_poly(new_vertices, parametrization=parametrization, bounds=bounds)
-            self.sim_q.update_poly(new_vertices, parametrization=parametrization, bounds=bounds)
-            self._update_quadrature_points()
+            old_nedges = self.sim_p.poly.nedges
+            success = self.sim_p.update_poly(new_vertices, parametrization=parametrization, convex_proj=convex_proj,
+                                             bounds=bounds, check_in=check_in)
+            if (not allow_reduce) and (self.sim_p.poly.nedges != old_nedges): 
+                self.sim_p.poly.nedges = old_nedges  # keep info of old number of edges
+                success = False
+            if success:
+                self.sim_q.update_poly(new_vertices, parametrization=parametrization, convex_proj=convex_proj)
+                self._update_quadrature_points()
         else:
             success = True
 
-        if update_state:
-            self._update_state()
-        if update_adjoint:
-            self._update_adjoint()
+        if success:
+            if update_state:
+                self._update_state()
+            if update_adjoint:
+                self._update_adjoint()
         return success
         
     def evaluate_directional_derivative(self, V, V_corners):

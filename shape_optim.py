@@ -122,7 +122,7 @@ class ShapeOptimizer:
         self.quad_intervals[1:-1] = np.stack([interv[:-1] + 1, interv[1:]], axis=1)
 
     def fit(self, niter=100, jtol=1e-5, gtol=1e-6, step=1e-3, alternate=False, neval_search=3, step_decrease=0.85,
-            parametrization="half-planes", early_stopping=True, reset_step=False, decrease_period=10, convex_proj=False,
+            early_stopping=True, reset_step=False, decrease_period=10, convex_proj=False,
             save_path=None, save_freq=20):
         log = dict(cost=[self.cost_fun()], grad=[], vert=[self.sim_p.poly.vertices.tolist()])
         gradfun = self._get_gradfun()
@@ -150,8 +150,8 @@ class ShapeOptimizer:
                 print("grad: ", grad)
 
             # reduce step size until cost function decreases
-            cost, step, init_decreased = self.line_search(step, step_decrease, neval_search, grad, parametrization, 
-                                                          verbose=self.verbose, early_stopping=early_stopping, reset=reset_step,
+            cost, step, init_decreased = self.line_search(step, step_decrease, neval_search, grad, verbose=self.verbose,
+                                                          early_stopping=early_stopping, reset=reset_step,
                                                           in_constraints=in_constraints, convex_proj=convex_proj)
 
             if init_decreased:
@@ -173,8 +173,7 @@ class ShapeOptimizer:
                 print("cost k: ", cost, "grad_norm k-1: ", gradcost, "ind_desc: ", rotation_ind, 
                       "tgrad: ", tgrad, "titer: ", t2-t1)
                 print("current polygon: \n", self.sim_p.poly.vertices)
-                # print("mics in poly: ", self.sim_p.poly.is_in(self.mic_pos))
-                # print("source in poly: ", self.sim_p.poly.is_in(self.source_pos.reshape([-1, 2])))
+
             rotation_ind = (rotation_ind + 1) % self.sim_p.poly.nedges 
             it += 1
 

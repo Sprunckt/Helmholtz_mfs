@@ -1,6 +1,7 @@
 from simulation import Simulation
 import numpy as np
 import time
+import json
 
 
 def array_to_list(arr):
@@ -54,6 +55,7 @@ class ShapeOptimizer:
         self.verbose = verbose
         self.update_sim()
 
+        self.nedges =  self.sim_p.poly.nedges
         self.counter = {"ncall": 0}
 
     def get_params(self, parametrization):
@@ -209,17 +211,15 @@ class ShapeOptimizer:
                                                                               self.sim_p.poly.normals[i - 1],
                                                                               axis=-1))  # dn p * q.conj
 
-    def update_sim(self, new_vertices=None, update_state=True, update_adjoint=True, 
+    def update_sim(self, new_params=None, update_state=True, update_adjoint=True, 
     parametrization="vertices", bounds=None, check_in=None, convex_proj=False, allow_reduce=False):
-        if new_vertices is not None:
-            old_nedges = self.sim_p.poly.nedges
-            success = self.sim_p.update_poly(new_vertices, parametrization=parametrization, convex_proj=convex_proj,
+        if new_params is not None:
+            success = self.sim_p.update_poly(new_params, parametrization=parametrization, convex_proj=convex_proj,
                                              bounds=bounds, check_in=check_in)
-            if (not allow_reduce) and (self.sim_p.poly.nedges != old_nedges): 
-                self.sim_p.poly.nedges = old_nedges  # keep info of old number of edges
+            if (not allow_reduce) and (self.sim_p.poly.nedges != self.nedges): 
                 success = False
             if success:
-                self.sim_q.update_poly(new_vertices, parametrization=parametrization, convex_proj=convex_proj)
+                self.sim_q.update_poly(new_params, parametrization=parametrization, convex_proj=convex_proj)
                 self._update_quadrature_points()
         else:
             success = True

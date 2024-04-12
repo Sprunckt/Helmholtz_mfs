@@ -234,9 +234,9 @@ class Simulation:
             else:
                 self.poly_virt = self.poly  
         elif parametrization == "half-planes":
-            success = self.poly.update_param(new_vert, bounds=bounds)
+            success = self.poly.update_param(new_vert, bounds=bounds, check_in=check_in)
             if new_virt_vert is not None:
-                success = self.poly_virt.update_param(new_virt_vert, bounds=bound, check_in=check_in)
+                success = self.poly_virt.update_param(new_virt_vert, bounds=bound)
             elif self.convexify:
                 if self.d == 2:
                     self.poly_virt = Polygon(self.poly.vertices)

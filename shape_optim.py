@@ -61,7 +61,7 @@ class ShapeOptimizer:
         self.corner_values = np.zeros((len(self.sim_p.poly.vertices), nfreq), dtype=complex)
         self.verbose = verbose
         self.update_sim()
-
+        self.nfreqs = nfreq
         self.nedges = self.sim_p.poly.nedges
         self.counter = {"ncall": 0}
 
@@ -259,7 +259,7 @@ class ShapeOptimizer:
             vals += np.sum(np.sum(V_corners[i] * (renormed_edges[i] - renormed_edges[i-1])) *
                            np.real(self.corner_values[i, :]))
 
-        return vals / self.nmics
+        return vals / self.nmics / self.nfreqs
 
     def partial_derivative(self, i):
         # generate a function psi_i on edges i, i-1 such that psi_i(i) = 1, psi_i(i-1) = 0 = psi_i(i+1)
@@ -285,7 +285,7 @@ class ShapeOptimizer:
         renormed_edge2 = self.sim_p.poly.edges[i-1] / np.linalg.norm(self.sim_p.poly.edges[i-1])
 
         res = res + (renormed_edge1 - renormed_edge2)*np.sum(np.real(self.corner_values[i, :]))
-        return res / self.nmics
+        return res / self.nmics / self.nfreqs
 
     def partial_derivative_proji(self, i):
         V, V_corners = np.zeros((self.n_int, 2)), np.zeros((self.sim_p.poly.nedges, 2))
@@ -310,14 +310,14 @@ class ShapeOptimizer:
         V_corners[i], V_corners[indnext] = epsiy * edgei, epsiyp * edgeip
         part_der[1] = self.evaluate_directional_derivative(V, V_corners)
 
-        return part_der / self.nmics
+        return part_der # no normalization as it is done in evaluate_directional_derivative
 
     def cost_fun(self, verbose=False):
         self.counter["ncall"] += 1
         if verbose:
             print("{} calls".format(self.counter["ncall"]))
 
-        return 0.5*np.sum(np.real(self.diffs*self.diffs.conj())) / self.nmics
+        return 0.5*np.sum(np.real(self.diffs*self.diffs.conj())) / self.nmics / self.nfreqs
 
     def cost_fun_full(self, verbose=False):
         self.counter["ncall"] += 1

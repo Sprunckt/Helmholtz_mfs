@@ -220,11 +220,13 @@ class Simulation:
         self.vpos = vpos
         self.ampl = ampl
 
-    def update_poly(self, new_vert, new_virt_vert=None, parametrization="vertices", bounds=None, check_in=None, convex_proj=False):
+    def update_poly(self, new_vert, new_virt_vert=None, parametrization="vertices",
+                    bounds=None, check_in=None, convex_proj=False):
         if parametrization == "vertices":
-            success = self.poly.update_vertices(new_vert, bounds=bounds, check_in=check_in, convex_proj=convex_proj)
+            success = self.poly.update_vertices(new_vert, bounds=bounds, check_in=check_in, convex_proj=convex_proj,
+                                                update_origin=True)
             if new_virt_vert is not None:
-                self.poly_virt.update_vertices(new_virt_vert, bounds=bounds)
+                self.poly_virt.update_vertices(new_virt_vert, bounds=bounds, update_origin=True)
             elif self.convexify:
                 if self.d == 2:
                     self.poly_virt.convex_projection()   # todo: ensure poly_virt is always a copy of self.poly for convexify
@@ -236,7 +238,7 @@ class Simulation:
         elif parametrization == "half-planes":
             success = self.poly.update_param(new_vert, bounds=bounds, check_in=check_in)
             if new_virt_vert is not None:
-                success = self.poly_virt.update_param(new_virt_vert, bounds=bound)
+                success = self.poly_virt.update_param(new_virt_vert, bounds=bounds)
             elif self.convexify:
                 if self.d == 2:
                     self.poly_virt = Polygon(self.poly.vertices)

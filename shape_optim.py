@@ -23,16 +23,23 @@ def dict_to_json(dico, path):
 
 class ShapeOptimizer:
     def __init__(self, init_vertices: np.ndarray, fs: float, nfreq: int, source_pos: np.ndarray, mic_pos: np.ndarray,
-                 measurements: np.ndarray, dx: float, nprocess=1, n_int=1000, origin=None,
+                 measurements: np.ndarray, dx: float, nprocess=1, n_int=1000, parametrization="half-planes",
                  sim_kwargs=None, src_ampl=None, verbose=False):
+        self.parametrization = parametrization
+
+        if parametrization == "half.planes":
+            origin = source_pos.copy()
+        else:
+            origin = None
+
         if sim_kwargs is None:
             sim_kwargs = {"boundsep": 0.05}
         self.sim_p = Simulation(vertices=init_vertices, fs=fs, nfreq=nfreq, dx=dx, origin=origin,
                                 pos_src=source_pos, src_ampl=src_ampl, **sim_kwargs)
         sim_kwargs_q = sim_kwargs.copy()
         sim_kwargs_q["beta"] = - np.asarray(sim_kwargs_q["beta"])  # todo: handle callable case
-        self.sim_q = Simulation(vertices=init_vertices, fs=fs, nfreq=nfreq, dx=dx, pos_src=mic_pos, origin=origin,
-                                **sim_kwargs_q)
+        self.sim_q = Simulation(vertices=init_vertices, fs=fs, nfreq=nfreq, dx=dx, pos_src=mic_pos,
+                                origin=origin, **sim_kwargs_q)
 
         self.source_pos = source_pos
         self.mic_pos = mic_pos
@@ -55,18 +62,18 @@ class ShapeOptimizer:
         self.verbose = verbose
         self.update_sim()
 
-        self.nedges =  self.sim_p.poly.nedges
+        self.nedges = self.sim_p.poly.nedges
         self.counter = {"ncall": 0}
 
-    def get_params(self, parametrization):
-        return self.sim_p.poly.get_params(parametrization)
+    def get_params(self):
+        return self.sim_p.poly.get_params(self.parametrization)
         
-    def line_search(self, step, step_decrease, neval_search, grad, parametrization, bounds=None, convex_proj=False,
+    def line_search(self, step, step_decrease, neval_search, grad, bounds=None, convex_proj=False,
                     early_stopping=False, reset=False, in_constraints=None, verbose=False):
         if bounds is None:
             bounds = (-10., 10.)
 
-        curr_params = self.get_params(parametrization)
+        curr_params = self.get_params()
         best_params = curr_params
         best_cost = np.inf
         start_cost = self.cost_fun()
@@ -79,7 +86,7 @@ class ShapeOptimizer:
             if verbose:
                 print("step: ", curr_step)
             success = self.update_sim(new_params, update_state=True, update_adjoint=False, convex_proj=convex_proj,
-                                      parametrization=parametrization, bounds=bounds, check_in=in_constraints, allow_reduce=False)
+                                      bounds=bounds, check_in=in_constraints, allow_reduce=False)
             curr_step = curr_step * step_decrease
 
             if not success:
@@ -100,7 +107,7 @@ class ShapeOptimizer:
                     if verbose:
                         print("costfunction decreased, early stopping")
                     break
-        self.update_sim(best_params, update_state=False, update_adjoint=False, parametrization=parametrization)
+        self.update_sim(best_params, update_state=False, update_adjoint=False)
         self.sim_p.load(*best_weights)
         self._update_adjoint()
         if reset:
@@ -118,9 +125,12 @@ class ShapeOptimizer:
             parametrization="half-planes", early_stopping=True, reset_step=False, decrease_period=10, convex_proj=False,
             save_path=None, save_freq=20):
         log = dict(cost=[self.cost_fun()], grad=[], vert=[self.sim_p.poly.vertices.tolist()])
-        gradfun = self._get_gradfun(parametrization)
+        gradfun = self._get_gradfun()
 
-        in_constraints = np.concatenate([self.mic_pos, self.source_pos], axis=0)
+        if self.parametrization == "half-planes":  # the origin is set at the source position
+            in_constraints = self.mic_pos
+        else:  # in that case also check the source position
+            in_constraints = np.concatenate([self.mic_pos, self.source_pos], axis=0)
 
         it, cost, gradcost, rotation_ind, decrease_ind = 0, np.inf, np.inf, 0, 0
         print("initial cost:", self.cost_fun())
@@ -211,15 +221,15 @@ class ShapeOptimizer:
                                                                               self.sim_p.poly.normals[i - 1],
                                                                               axis=-1))  # dn p * q.conj
 
-    def update_sim(self, new_params=None, update_state=True, update_adjoint=True, 
-    parametrization="vertices", bounds=None, check_in=None, convex_proj=False, allow_reduce=False):
+    def update_sim(self, new_params=None, update_state=True, update_adjoint=True,
+                   bounds=None, check_in=None, convex_proj=False, allow_reduce=False):
         if new_params is not None:
-            success = self.sim_p.update_poly(new_params, parametrization=parametrization, convex_proj=convex_proj,
+            success = self.sim_p.update_poly(new_params, parametrization=self.parametrization, convex_proj=convex_proj,
                                              bounds=bounds, check_in=check_in)
             if (not allow_reduce) and (self.sim_p.poly.nedges != self.nedges): 
                 success = False
             if success:
-                self.sim_q.update_poly(new_params, parametrization=parametrization, convex_proj=convex_proj)
+                self.sim_q.update_poly(new_params, parametrization=self.parametrization, convex_proj=convex_proj)
                 self._update_quadrature_points()
         else:
             success = True
@@ -317,135 +327,30 @@ class ShapeOptimizer:
 
         return 0.5*np.real(self.diffs*self.diffs.conj())
 
-    def _get_gradfun(self, parametrization):
-        if parametrization == "half-planes":
+    def _get_gradfun(self):
+        if self.parametrization == "half-planes":
             gradfun = self.partial_derivative_proji
-        elif parametrization == "vertices":
+        elif self.parametrization == "vertices":
             gradfun = self.partial_derivative
         else:
             raise ValueError("unknown parametrization, accepted values:, 'half-planes', 'vertices'")
         return gradfun 
     
-    def get_gradient(self, parametrization):
-        gradfun = self._get_gradfun(parametrization)
+    def get_gradient(self):
+        gradfun = self._get_gradfun()
         grad = np.zeros((len(self.sim_p.poly.vertices), 2))
 
         for i in range(len(self.sim_p.poly.vertices)):
             grad[i] = gradfun(i)
         return grad 
 
-    def evaluate_costfun_dir(self, direction, parametrization, step, nb_step):
+    def evaluate_costfun_dir(self, direction, step, nb_step):
         res = np.zeros(nb_step)
-        params = self.get_params(parametrization)
+        params = self.get_params()
         for i in range(nb_step):
             print("step {}, displacement {}".format(i, step*(i+1)))
             params = params + step*direction 
-            self.update_sim(params, parametrization=parametrization, update_adjoint=False, update_state=True)
+            self.update_sim(params, update_adjoint=False, update_state=True)
             res[i] = self.cost_fun()
         return res
-
-if __name__ == '__main__':
-    import matplotlib.pyplot as plt
-
-    fs = 240.
-    nfreq = 3
-    pos_src = np.array([[0., 0.5]])
-    dx = 0.2
-
-    eps = 1.
-
-    def perturbation_field(x, y):
-        v = np.zeros([len(x), 2])
-        indtop = np.where(y == 1.)[0]
-        v[indtop, 1] = -eps * (np.abs(x[indtop]) - 1)
-
-        return v
-
-
-    height = 1.2
-    init_vertices = np.array([[-1, 0], [1, 0.], [1, 1.], [0., 1], [-1, 1]])
-    vertices = init_vertices + height * perturbation_field(init_vertices[:, 0], init_vertices[:, 1])
-
-    antenna_pos = np.array([[0., 0.5]])
-    mic_pos = (0.25 * np.stack([np.cos(np.linspace(0, 2 * np.pi, 25)), np.sin(np.linspace(0, 2 * np.pi, 25))], axis=1)
-               + antenna_pos)
-
-    # plt.plot(vertices[:, 0], vertices[:, 1])
-    # plt.plot(mic_pos[:, 0], mic_pos[:, 1], 'o')
-    # plt.plot(pos_src[:, 0], pos_src[:, 1], 'x')
-    # plt.show()
-
-    beta = [0.06 for i in range(len(vertices))]
-    print("simulating")
-    sim = Simulation(vertices=vertices, fs=fs, nfreq=nfreq, pos_src=pos_src, dx=dx, boundsep=1e-2, min_dist=0.005,
-                     nsrc_schedule=dict(freq_marks=np.array([50.]),
-                                        method='per_wavelength',
-                                        nsrc=np.array([100, 100]), max_relative_error=1e-3),
-                     error_thresh=1e-5, cond='robin', beta=beta, add_src=20)
-    print("done")
-    sim.simulate(2)
-    obs, _ = sim.compute(mic_pos, 3)
-    np.save('data/obs.npy', obs)
-
-    # plot gradient
-    grid = np.meshgrid(np.linspace(-1, 1, 200), np.linspace(0, 1+height, 200))
-    grid_shape = grid[0].shape
-    grid = np.stack([grid[0].reshape(-1), grid[1].reshape(-1)], axis=1)
-    # val, in_mask = sim.compute_grad(grid, 2)[:, 1, :], sim.poly.is_in(grid, 0.005)
-    # val[~in_mask] = np.nan
-    # plt.imshow(np.linalg.norm(val, axis=-1).reshape(grid_shape), extent=[-1, 1, 0, 1+height], origin='lower', vmax=5.)
-    # plt.colorbar()
-    # plt.show()
-
-    init_vertices = np.array([[-1, 0], [1, 0.], [1, 1.], [0., 1], [-1, 1]])
-    opt = ShapeOptimizer(init_vertices, fs, nfreq, pos_src, mic_pos, obs, nprocess=2, dx=dx,
-                         sim_kwargs=dict(boundsep=1e-2, min_dist=0.005,
-                                         nsrc_schedule=dict(freq_marks=np.array([50.]), method='per_wavelength',
-                                                            nsrc=np.array([100, 100]), max_relative_error=1e-3),
-                                         error_thresh=1e-5, cond='robin', beta=beta, add_src=20))
-
-    # val, in_mask = opt.sim_q.compute_grad(grid, 2)[:, 1, :], opt.sim_p.poly.is_in(grid, 0.005)
-    # val[~in_mask] = np.nan
-    # plt.imshow(np.linalg.norm(val, axis=-1).reshape(grid_shape), extent=[-1, 1, 0, 1 + height], origin='lower', vmax=5.)
-    # plt.colorbar()
-    # plt.show()
-
-    vec_field = perturbation_field(opt.quad_points[:, 0], opt.quad_points[:, 1])
-    vec_field_corners = np.zeros((len(opt.sim_p.poly.vertices), 2))
-    shape_der = opt.evaluate_directional_derivative(vec_field, vec_field_corners)
-    print("shape derivative: ", shape_der)
-    print("partial derivatives: ", [opt.partial_derivative(i) for i in range(opt.sim_p.poly.nedges)])
-    # do the same using finite differences
-
-    # opt2 = ShapeOptimizer(np.array([[-1, 0], [1, 0.], [1, 1.], [0., 1], [-1, 1]]), fs, nfreq, pos_src, mic_pos,
-    #                       obs, nprocess=2, dx=dx,
-    #                       sim_kwargs=dict(boundsep=1e-2, min_dist=0.005,
-    #                                       nsrc_schedule=dict(freq_marks=np.array([50.]), method='per_wavelength',
-    #                                                          nsrc=np.array([100, 100]), max_relative_error=1e-3),
-    #                                       error_thresh=1e-5, cond='robin', beta=beta, add_src=20))
-    # vald = opt2.cost_fun()
-    # valdz = []
-    # dzval = [0.01, 0.005, 0.001, 0.0009, 0.0008, 0.0007, 0.0006, 0.0005, 0.0004, 0.0003, 0.0002, 0.0001,
-    #          0.00009, 0.00008, 0.00007, 0.00006, 0.00005, 0.00004, 0.00003, 0.00002, 0.00001, 7e-6, 5e-6, 1e-6]
-    #
-    # for dz in dzval:
-    #     opt2.update_sim(init_vertices + dz*perturbation_field(init_vertices[:, 0], init_vertices[:, 1]),
-    #                     update_adjoint=False)
-    #     valdz.append(opt2.cost_fun())
-    #
-    # fdval = [(valdz[i] - vald)/dzval[i] for i in range(len(dzval))]
-    # plt.loglog(dzval, fdval, '-.')
-    # plt.hlines(shape_der, dzval[-1], dzval[0])
-    # plt.show()
-
-    zval = np.linspace(0, 1.3, 300)
-    val = np.zeros(len(zval))
-    for i, t in enumerate(zval):
-        print(t)
-        opt.update_sim(init_vertices + t*perturbation_field(init_vertices[:, 0], init_vertices[:, 1]),
-                       update_adjoint=False)
-        val[i] = opt.cost_fun()
-
-    plt.plot(zval, val)
-    plt.show()
 

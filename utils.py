@@ -209,7 +209,7 @@ class Polygon:
             if not np.all((bounds[0] < new_projs) &  (new_projs < bounds[1])):
                 return False 
 
-        if new_origin is not None:
+        if new_origin is not None:  # otherwise assume old origin is still in the polygon
             self.origin = new_origin
 
         self.projs = new_projs
@@ -247,9 +247,9 @@ class Polygon:
         angles = mod2pi(np.arctan2(self.vertices[:, 1] - self.origin[1], self.vertices[:, 0] - self.origin[0]))
         self.vertices = self.vertices[np.argsort(angles)]
 
-    def update_vertices(self, new_vert, sort=False, bounds=None, check_in=None, convex_proj=False):
+    def update_vertices(self, new_vert, sort=False, bounds=None, check_in=None, convex_proj=False, update_origin=False):
         if bounds is not None:
-            if not np.all((bounds[0] < new_vert) &  (new_vert < bounds[1])):
+            if not np.all((bounds[0] < new_vert) & (new_vert < bounds[1])):
                 return False 
         if convex_proj:
             new_vert = new_vert[ConvexHull(new_vert).vertices]
@@ -260,6 +260,10 @@ class Polygon:
         if len(self.vertices) < 3:
             print("Number of vertices should exceed 2")
             return False
+
+        if update_origin:
+            self.origin = np.mean(self.vertices, axis=0)
+
         self._update_edges_and_angles()
         self.normals = np.stack([self.edges[:, 1], -self.edges[:, 0]], axis=1)
         self.normals /= np.linalg.norm(self.normals, axis=1)[:, np.newaxis]
@@ -297,9 +301,9 @@ class Polygon:
             res += self.integrate_edge(vals[mask], quad_nodes[mask], i)
         return res
 
-    def convex_projection(self):
+    def convex_projection(self, update_origin=False):
         """Update the polygon to its convex hull."""
-        self.update_vertices(self.vertices[ConvexHull(self.vertices).vertices])
+        self.update_vertices(self.vertices[ConvexHull(self.vertices).vertices], update_origin=update_origin)
 
     def plot(self):
         plt.plot(self.vertices[:, 0], self.vertices[:, 1], 'x')

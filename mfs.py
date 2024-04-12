@@ -138,8 +138,7 @@ class SampledBoundary:
         return len(self.bound)
 
     def copy(self):
-        return SampledBoundary(Polygon(np.array([[0., 0.], [1., 0.], [1., 1.], [0., 1.]])),
-                               [self.bound.copy(), self.normvec.copy(), self.bound_ids.copy()],
+        return SampledBoundary(None, [self.bound.copy(), self.normvec.copy(), self.bound_ids.copy()],
                                sample_type='no_resample')
 
 

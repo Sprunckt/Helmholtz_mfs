@@ -120,9 +120,10 @@ class ShapeOptimizer:
         self.quad_intervals[0], self.quad_intervals[-1] = [0, interv[0]], [interv[-1] + 1, len(self.quad_ids) - 1]
         self.quad_intervals[1:-1] = np.stack([interv[:-1] + 1, interv[1:]], axis=1)
 
-    def fit(self, niter=100, jtol=1e-5, gtol=1e-6, step=1e-3, alternate=False, neval_search=3, step_decrease=0.85,
+    def fit(self, niter=100, jtol=1e-5, gtol=1e-6, step=1e-3, alternate=np.inf, neval_search=3, step_decrease=0.85,
             early_stopping=True, reset_step=False, decrease_period=10, convex_proj=False,
             save_path=None, save_freq=20):
+        """Set alternate to inf to compute full grad at each iteration, 0 to always alternate the vertex number."""
         log = dict(cost=[self.cost_fun()], grad=[], vert=[self.sim_p.poly.vertices.tolist()])
         gradfun = self._get_gradfun()
 
@@ -135,9 +136,11 @@ class ShapeOptimizer:
         print("initial cost:", self.cost_fun())
         while it < niter and jtol < cost and gtol < gradcost:
             t1 = time.time()
+
             grad = np.zeros((len(self.sim_p.poly.vertices), 2))
-            if alternate:
+            if it >= alternate:
                 grad[rotation_ind] = gradfun(rotation_ind)
+                rotation_ind = (rotation_ind + 1) % self.sim_p.poly.nedges 
             else:
                 for i in range(len(self.sim_p.poly.vertices)):
                     grad[i] = gradfun(i)
@@ -173,7 +176,6 @@ class ShapeOptimizer:
                       "tgrad: ", tgrad, "titer: ", t2-t1)
                 print("current polygon: \n", self.sim_p.poly.vertices)
 
-            rotation_ind = (rotation_ind + 1) % self.sim_p.poly.nedges 
             it += 1
 
             if (save_path is not None) and (it % save_freq == 0):

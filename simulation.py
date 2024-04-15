@@ -348,7 +348,8 @@ class Simulation:
         if verbose:
             print("total simulation time : {} s".format(time.time()-t1))
 
-    def compute(self, compute_points, nworkers=1, tol=0., non_conv=False, check_in=True, use_src=True, verbose=False):
+    def compute(self, compute_points, nworkers=1, tol=0., non_conv=False, check_in=True, use_src=True, verbose=False,
+                freq_ind=None):
         """Compute the solution at the given points (shape (npoints, d)) at all frequencies, returns a tuple
         (res, is_in) of arrays of shape (npoints, nfreqs) and (npoints,) respectively, where is_in is True if the
         corresponding point is inside the domain, False otherwise and res contains the scalar solution at each compute
@@ -369,11 +370,12 @@ class Simulation:
         npoints = in_mask.sum()
         ind_comp = np.where(in_mask)[0]
         to_compute = np.reshape(compute_points[ind_comp], [npoints, -1])
-
+        if freq_ind is None:  # compute all frequencies if not specified
+            freq_ind = np.arange(1, self.nfreqs)
         if nworkers == 1:
             res = np.zeros([npoints, self.nfreqs - 1], dtype=np.complex128)
 
-            for i in range(1, self.nfreqs):
+            for i in freq_ind:
                 res[:, i-1] = self.compute_freq(to_compute, i, use_src=use_src)
         else:
             if nworkers < 0:
@@ -383,7 +385,7 @@ class Simulation:
                 pool = mp.Pool(processes=nworkers)
             # local function to compute the solution at a given frequency, take only ind as argument
             fun = partial(self.compute_freq, to_compute, use_src=use_src)
-            res = np.stack(pool.map(fun, np.arange(1, self.nfreqs)), axis=1)
+            res = np.stack(pool.map(fun, freq_ind), axis=1)
             pool.close()
 
         res_tot[ind_comp, 1:] = res

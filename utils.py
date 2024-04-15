@@ -236,7 +236,7 @@ class Polygon:
 
         success = self.update_vertices(self.vertices, sort=True)  # to ensure indexation is correct
 
-        if check_in is not None:  # check if the points are in. 
+        if success and (check_in is not None):  # check if the points are in (after ensuring correct update of vertices) 
             if not np.all(self.is_in(check_in)):
                 return False 
 

@@ -27,8 +27,8 @@ class ShapeOptimizer:
                  sim_kwargs=None, src_ampl=None, verbose=False):
         self.parametrization = parametrization
 
-        if parametrization == "half.planes":
-            origin = source_pos.copy()
+        if parametrization == "half-planes":
+            origin = np.reshape(source_pos.copy(), -1)
         else:
             origin = None
 
@@ -92,7 +92,6 @@ class ShapeOptimizer:
             if not success:
                 print("Polygon update failed, skipping")
                 continue
-            
             new_cost = self.cost_fun()
             if verbose:
                 print("cost: ", new_cost)

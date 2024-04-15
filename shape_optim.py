@@ -79,15 +79,17 @@ class ShapeOptimizer:
         best_cost = np.inf
         start_cost = self.cost_fun()
         best_weights = self.sim_p.mfs.room_bound.copy(), self.sim_p.vpos.copy(), self.sim_p.ampl.copy()
-        curr_step, best_step = step, step
+        new_step, curr_step, best_step = step, step, step
         init_decrease = False  # True if costfun decreases at first step 
 
         for i in range(neval_search):
+            curr_step = new_step
             new_params = curr_params - curr_step*grad
             if verbose:
                 print("step: ", curr_step)
             success = self.update_sim(new_params, update_state=True, update_adjoint=False, convex_proj=convex_proj,
                                       bounds=bounds, check_in=in_constraints, allow_reduce=False)
+            new_step = curr_step * step_decrease
 
             if not success:
                 print("Polygon update failed, skipping")
@@ -102,12 +104,13 @@ class ShapeOptimizer:
                 best_cost = new_cost
                 best_weights = self.sim_p.mfs.room_bound.copy(), self.sim_p.vpos.copy(), self.sim_p.ampl.copy()
                 best_params, best_step = new_params.copy(), curr_step
-                if early_stopping and best_cost < start_cost:
-                    if verbose:
-                        print("costfunction decreased, early stopping")
-                    break
-
-            curr_step = curr_step * step_decrease
+                if best_cost < start_cost:
+                    if i == 0:
+                        init_decrease = True
+                    if early_stopping:
+                        if verbose:
+                            print("costfunction decreased, early stopping")
+                        break
 
         self.update_sim(best_params, update_state=False, update_adjoint=False)
         self.sim_p.load(*best_weights)

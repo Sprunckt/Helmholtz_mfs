@@ -76,8 +76,8 @@ class Simulation:
         # ampl will contain the amplitudes for each source at each freq, vpos the boundary positions at each mark
         self.ampl, self.vpos = [None for _ in range(self.nfreqs)], []
 
-        self.simulated = np.zeros(nfreq, dtype=bool)
-        self.simulated[0] = True
+        self._to_simulate = np.ones(nfreq, dtype=bool)
+        self._to_simulate[0] = False
 
         if nsrc_schedule is None:
             # sampling strategy : 3 points per wavelength for f > 100, otherwise 10. Resample every 200 Hz or so
@@ -191,7 +191,7 @@ class Simulation:
             if max_tries == 0:
                 print("error threshold not reached, simulation might be inaccurate")
             self.ampl[indfreq] = self.mfs.ampl.copy()
-            self.simulated[indfreq] = True
+            self._to_simulate[indfreq] = False
             t2 = time.time()
 
             print("time {} s".format(t2-t1))
@@ -201,7 +201,7 @@ class Simulation:
         self.nsrc_schedule = nsrc_schedule
 
     def reset(self):
-        self.simulated[1:] = False 
+        self._to_simulate[1:] = True
 
     def _resample(self):
         for i in range(len(self.vpos)):
@@ -316,10 +316,21 @@ class Simulation:
         rel_error = np.sqrt(np.sum((np.abs(mfs_val - src_val)) ** 2)) / np.linalg.norm(src_val)
         return rel_error
 
+    def get_ind(self, fmin, fmax):
+        """Return indices from the range of frequencies [fmin, fmax]"""
+        return np.where((self.freqs >= fmin) & (self.freqs <= fmax))[0]
+
+    def set_to_simulate(self, fmin, fmax):
+        """Set ONLY the frequencies in the range [fmin, fmax] to be computed"""
+        self._to_simulate[:] = False
+        ind = self.get_ind(fmin, fmax)
+        self._to_simulate[ind] = True
+        self._to_simulate[0] = False  # null frequency is never computed
+
     def simulate(self, nworkers=1, verbose=True):
         """Compute the solution coefficients at each frequency using nworkers processes."""
         t1 = time.time()
-        ind_comp = np.where(~self.simulated)[0]
+        ind_comp = np.where(self._to_simulate)[0]
         if nworkers == 1:  # 1 frequency at a time
             for ind in ind_comp:
                 self.ampl[ind] = self.simulate_freq(ind, verbose=verbose)
@@ -341,7 +352,7 @@ class Simulation:
         """Compute the solution at the given points (shape (npoints, d)) at all frequencies, returns a tuple
         (res, is_in) of arrays of shape (npoints, nfreqs) and (npoints,) respectively, where is_in is True if the
         corresponding point is inside the domain, False otherwise and res contains the scalar solution at each compute
-        point and frequency."""
+        point and frequency. Only compute for the simulated frequencies"""
 
         t1 = time.time()
         if check_in:

@@ -37,7 +37,7 @@ class Simulation:
         is above the threshold
         """
         if src_ampl is None:
-            src_ampl = np.ones([len(pos_src), nfreq])
+            src_ampl = np.ones([len(pos_src), nfreq], dtype=np.complex128)
         else:
             assert src_ampl.shape == (len(pos_src), nfreq), "src_ampl should have shape (len(pos_src), nfreq)"
         src_ampl[:, 0] = 0.  # zero amplitude for freq 0
@@ -71,7 +71,7 @@ class Simulation:
 
         self.freqs = np.linspace(0, fs, nfreq)
         self.wave_numbers = 2 * np.pi * self.freqs / c
-        self.nfreqs = len(self.freqs)
+        self.nfreqs = nfreq
         self.min_dist = min_dist
         # ampl will contain the amplitudes for each source at each freq, vpos the boundary positions at each mark
         self.ampl, self.vpos = [None for _ in range(self.nfreqs)], []
@@ -277,6 +277,7 @@ class Simulation:
                                add_fun=self.mfs.add_fun, src_ampl=self.src_ampl[:, ind])
         if verbose:
             print("computing frequency {}; {} sources".format(self.freqs[ind], mfs_tmp.nsrc))
+
         res = mfs_tmp.evaluate_sol(compute_points, self.wave_numbers[ind], use_src=use_src)
 
         t2 = time.time()
@@ -320,7 +321,11 @@ class Simulation:
         """Return indices from the range of frequencies [fmin, fmax]"""
         return np.where((self.freqs >= fmin) & (self.freqs <= fmax))[0]
 
-    def set_to_simulate(self, fmin, fmax):
+    def set_freq_ind_to_simulate(self, ind_sim):
+        self._to_simulate[:] = False
+        self._to_simulate[ind_sim] = True
+
+    def set_freq_to_simulate(self, fmin, fmax):
         """Set ONLY the frequencies in the range [fmin, fmax] to be computed"""
         self._to_simulate[:] = False
         ind = self.get_ind(fmin, fmax)
@@ -348,35 +353,20 @@ class Simulation:
         if verbose:
             print("total simulation time : {} s".format(time.time()-t1))
 
-    def compute(self, compute_points, nworkers=1, tol=0., non_conv=False, check_in=True, use_src=True, verbose=False,
-                freq_ind=None):
-        """Compute the solution at the given points (shape (npoints, d)) at all frequencies, returns a tuple
-        (res, is_in) of arrays of shape (npoints, nfreqs) and (npoints,) respectively, where is_in is True if the
-        corresponding point is inside the domain, False otherwise and res contains the scalar solution at each compute
-        point and frequency. Only compute for the simulated frequencies"""
+    def compute(self, compute_points, nworkers=1, use_src=True, verbose=False, freq_ind=None):
+        """Compute the solution at the given points (shape (npoints, d)) at all frequencies, returns an array
+        res of shape (npoints, len(freq_ind)) containing the scalar solution at each compute
+        point and computed frequency specified by freq_ind."""
 
         t1 = time.time()
-        if check_in:
-            if non_conv:
-                in_mask = in_polygon(compute_points, self.poly.vertices)
-            else:
-                in_mask = self.poly.is_in(compute_points, tol=tol)
-        else:
-            in_mask = np.ones(len(compute_points), dtype=bool)
 
-        res_tot = np.full([len(compute_points), self.nfreqs], np.nan, dtype=np.complex128)
-        res_tot[in_mask, 0] = 0.  # 0 frequency
-
-        npoints = in_mask.sum()
-        ind_comp = np.where(in_mask)[0]
-        to_compute = np.reshape(compute_points[ind_comp], [npoints, -1])
         if freq_ind is None:  # compute all frequencies if not specified
-            freq_ind = np.arange(1, self.nfreqs)
-        if nworkers == 1:
-            res = np.zeros([npoints, self.nfreqs - 1], dtype=np.complex128)
+            freq_ind = np.arange(self.nfreqs)
 
-            for i in freq_ind:
-                res[:, i-1] = self.compute_freq(to_compute, i, use_src=use_src)
+        if nworkers == 1:
+            res = np.full([len(compute_points), len(freq_ind)], np.nan, dtype=np.complex128)
+            for k, i in enumerate(freq_ind):
+                res[:, k] = self.compute_freq(compute_points, i, use_src=use_src)
         else:
             if nworkers < 0:
                 # use all available cores
@@ -384,36 +374,34 @@ class Simulation:
             else:
                 pool = mp.Pool(processes=nworkers)
             # local function to compute the solution at a given frequency, take only ind as argument
-            fun = partial(self.compute_freq, to_compute, use_src=use_src)
+            fun = partial(self.compute_freq, compute_points, use_src=use_src)
             res = np.stack(pool.map(fun, freq_ind), axis=1)
             pool.close()
-
-        res_tot[ind_comp, 1:] = res
 
         t2 = time.time()
         if verbose:
             print("total computation time : {} s".format(t2 - t1))
 
-        return res_tot, in_mask
+        return res
 
-    def compute_grad(self, compute_points, nworkers=1, use_src=True, verbose=False):
+    def compute_grad(self, compute_points, nworkers=1, use_src=True, verbose=False, freq_ind=None):
         """Compute the solution at the given points (shape (npoints, d)) at all frequencies, returns a tuple
         (res, is_in) of arrays of shape (npoints, nfreqs) and (npoints,) respectively, where is_in is True if the
         corresponding point is inside the domain, False otherwise and res contains the scalar solution at each compute
         point and frequency."""
 
         t1 = time.time()
-        grad_tot = np.full([len(compute_points), self.nfreqs, 2], np.nan, dtype=np.complex128)
-        grad_tot[:, 0, :] = 0.  # 0 frequency
+        if freq_ind is None:  # compute all frequencies if not specified
+            freq_ind = np.arange(self.nfreqs)
 
         npoints = len(compute_points)
-        to_compute = np.reshape(compute_points, [npoints, -1])
+        compute_points = np.reshape(compute_points, [npoints, -1])
 
         if nworkers == 1:
             res_grad = np.zeros([npoints, self.nfreqs - 1, 2], dtype=np.complex128)
 
-            for i in range(1, self.nfreqs):
-                res_grad[:, i-1] = self.compute_grad_freq(to_compute, i, use_src=use_src)
+            for k, i in enumerate(freq_ind):
+                res_grad[:, k] = self.compute_grad_freq(compute_points, i, use_src=use_src)
         else:
             if nworkers < 0:
                 # use all available cores
@@ -421,18 +409,16 @@ class Simulation:
             else:
                 pool = mp.Pool(processes=nworkers)
             # local function to compute the solution at a given frequency, take only ind as argument
-            fun = partial(self.compute_grad_freq, to_compute, use_src=use_src)
+            fun = partial(self.compute_grad_freq, compute_points, use_src=use_src)
 
-            res_grad = np.stack(pool.map(fun, np.arange(1, self.nfreqs)), axis=1)
+            res_grad = np.stack(pool.map(fun, freq_ind), axis=1)
             pool.close()
-
-        grad_tot[:, 1:] = res_grad
 
         t2 = time.time()
         if verbose:
             print("total computation time : {} s".format(t2 - t1))
 
-        return grad_tot
+        return res_grad
 
     def freq_to_time(self, freq_res, decay=None, low_cut=None):
         """Convert the frequency response to the time impulse response"""
@@ -447,19 +433,23 @@ class Simulation:
 
         return tval, np.fft.irfft(freq_res, 2*self.nfreqs-2, axis=1)
 
-    def compute_corner_values(self, use_src=True):
-        # compute the values of the solution at the corners of the polygon (take limit for the gradient)
-        res = np.zeros((len(self.poly.vertices), self.nfreqs), dtype=complex)
+    def compute_corner_values(self, use_src=True, freq_ind=None):
 
-        res_grad = np.zeros((len(self.poly.vertices), self.nfreqs, 2, 2), dtype=complex)
-        for i in range(1, self.nfreqs):
+        if freq_ind is None:
+            freq_ind = np.arange(self.nfreqs)
+
+        # compute the values of the solution at the corners of the polygon (take limit for the gradient)
+        res = np.zeros((len(self.poly.vertices), len(freq_ind)), dtype=complex)
+
+        res_grad = np.zeros((len(self.poly.vertices), len(freq_ind), 2, 2), dtype=complex)
+        for k, i in enumerate(freq_ind):
             mfs_tmp = HelmholtzMFS(room_bound=self.mfs.room_bound, virtual_bound=self.vpos[self.freq_ref[i]],
                                    pos_src=self.mfs.pos_src, poly=self.poly, cond=self.mfs.cond,
                                    beta=self.mfs.beta, ampl=self.ampl[i],
                                    add_fun=self.mfs.add_fun, src_ampl=self.src_ampl[:, i])
-            res[:, i] = mfs_tmp.evaluate_sol(self.poly.vertices, self.wave_numbers[i], use_src=use_src)
+            res[:, k] = mfs_tmp.evaluate_sol(self.poly.vertices, self.wave_numbers[i], use_src=use_src)
 
-            res_grad[:, i, :, :] = mfs_tmp.evaluate_corner_der(self.wave_numbers[i], use_src=use_src)
+            res_grad[:, k, :, :] = mfs_tmp.evaluate_corner_der(self.wave_numbers[i], use_src=use_src)
         return res, res_grad
 
     def plot_bound_values(self, nplot):

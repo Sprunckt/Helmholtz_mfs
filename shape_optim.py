@@ -155,8 +155,11 @@ class ShapeOptimizer:
 
         if compute_full_cost:
             self._reset_active_indices()
-            self.update_sim(update_state=True, update_adjoint=False)
             log["full_cost"] = [self.cost_fun()]
+
+        if mic_batch_size > 0 or freq_batch_size > 0:
+            self.batch(freq_batch_size, mic_batch_size)
+            self.update_sim(update_state=True, update_adjoint=True)
 
         gradfun = self._get_gradfun()
 
@@ -170,7 +173,6 @@ class ShapeOptimizer:
         while it < niter and jtol < cost and gtol < gradcost:
             t1 = time.time()
 
-            self.batch(freq_batch_size, mic_batch_size)  # update active indices for current iteration
             log["freqs"].append(self._active_ind.tolist()), log["mics"].append(self._active_mic_ind.tolist())
 
             grad = np.zeros((len(self.sim_p.poly.vertices), 2))
@@ -218,6 +220,8 @@ class ShapeOptimizer:
                 log["full_cost"].append(self.cost_fun())
             it += 1
 
+            self.batch(freq_batch_size, mic_batch_size)  # update active indices
+
             if (save_path is not None) and (it % save_freq == 0):
                 dict_to_json(log, save_path)
 
@@ -250,6 +254,7 @@ class ShapeOptimizer:
         self.sim_q.src_ampl[self._active_mic_ind[:, np.newaxis], self._active_ind[np.newaxis, :]] = - self.diffs
         self.sim_q.simulate(self.nprocess, verbose=False)
         self.q_values = self.sim_q.compute(self.quad_points, self.nprocess, freq_ind=self._active_ind)
+
         cornerval_q = self.sim_q.compute_corner_values(freq_ind=self._active_ind)
 
         self.q_grads = np.zeros((self.n_int, self._nactive, 2), dtype=complex)
@@ -322,7 +327,8 @@ class ShapeOptimizer:
             normal = normals[j]
             beta_val = beta_val_tot[quad_ids]
             vals = (np.sum(np.real(p_grad * q_grad.conj()), axis=(1, 2)) -
-                    np.sum(np.real(self.sim_p.wave_numbers[np.newaxis, self._active_ind]**2 * p_val * q_val.conj()), axis=1) +
+                    np.sum(np.real(self.sim_p.wave_numbers[np.newaxis, self._active_ind]**2 * p_val * q_val.conj()),
+                           axis=1) +
                     2 * np.sum(np.real(beta_val * beta_val.conj())[:, np.newaxis] *
                                self.sim_p.wave_numbers[np.newaxis, self._active_ind]**2 *
                                np.real(p_val * q_val.conj()), axis=1))*psi[j]

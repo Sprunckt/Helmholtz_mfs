@@ -199,6 +199,7 @@ class Simulation:
 
         self.boundsep = boundsep
         self.nsrc_schedule = nsrc_schedule
+        self.ampl[0] = np.zeros(len(self.vpos[0].bound)+add_src*self.poly.nedges)  # to compute null frequency as 0
 
     def reset(self):
         self._to_simulate[1:] = True
@@ -398,7 +399,7 @@ class Simulation:
         compute_points = np.reshape(compute_points, [npoints, -1])
 
         if nworkers == 1:
-            res_grad = np.zeros([npoints, self.nfreqs - 1, 2], dtype=np.complex128)
+            res_grad = np.zeros([npoints, len(freq_ind), 2], dtype=np.complex128)
 
             for k, i in enumerate(freq_ind):
                 res_grad[:, k] = self.compute_grad_freq(compute_points, i, use_src=use_src)

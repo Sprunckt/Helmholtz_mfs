@@ -44,10 +44,9 @@ class ShapeOptimizer:
         self.source_pos = source_pos
         self.mic_pos = mic_pos
         self.nmics = len(mic_pos)
-        self.antenna_radius = np.max(np.linalg.norm(self.mic_pos, axis=1))
         self.nprocess = nprocess
         self.observations = measurements  # shape len(freqs)
-        self.diffs = None  # difference between observations and simulated values
+        self.diffs = None  # difference between observations and simulated values, only active freqs and mics
         self.n_int = n_int  # number of quadrature points on the boundary
 
         self.quad_points, self.quad_ids, self.quad_nodes = None, None, None
@@ -61,10 +60,14 @@ class ShapeOptimizer:
         # active frequency indices used in the cost function/gradient computations
         self._active_ind = np.arange(1, self.sim_p.nfreqs)
         self._nactive = self.sim_p.nfreqs - 1
+        
+        self._active_mic_ind = np.arange(self.nmics)
+        self._nactive_mic = self.nmics
+        
         self.update_sim()
         self.nfreqs = nfreq
         self.nedges = self.sim_p.poly.nedges
-        self.counter = {"ncall": 0}
+        self._generator = np.random.default_rng()
 
     def get_params(self):
         return self.sim_p.poly.get_params(self.parametrization)
@@ -117,6 +120,8 @@ class ShapeOptimizer:
         self._update_adjoint()
         if reset:
             best_step = step
+        if best_cost == np.inf:
+            print("No valid step found to update polygon, failure")
         return best_cost, best_step, init_decrease
 
     def _update_quadrature_points(self):
@@ -125,12 +130,34 @@ class ShapeOptimizer:
         interv = np.where(np.diff(self.quad_ids) != 0)[0]
         self.quad_intervals[0], self.quad_intervals[-1] = [0, interv[0]], [interv[-1] + 1, len(self.quad_ids) - 1]
         self.quad_intervals[1:-1] = np.stack([interv[:-1] + 1, interv[1:]], axis=1)
+    
+    def batch(self, freq_batch_size, mic_batch_size):
+        if freq_batch_size > 0:
+            self._active_ind = self._generator.choice(np.arange(1, self.sim_p.nfreqs), freq_batch_size, replace=False)
+            self._nactive = freq_batch_size
+        if mic_batch_size > 0:
+            self._active_mic_ind = self._generator.choice(np.arange(self.nmics), mic_batch_size, replace=False)
+            self._nactive_mic = mic_batch_size
+
+    def _reset_active_indices(self):
+        self._active_ind = np.arange(1, self.sim_p.nfreqs)
+        self._nactive = self.sim_p.nfreqs - 1
+        self._active_mic_ind = np.arange(self.nmics)
+        self._nactive_mic = self.nmics
 
     def fit(self, niter=100, jtol=1e-5, gtol=1e-6, step=1e-3, alternate=np.inf, neval_search=3, step_decrease=0.85,
-            early_stopping=True, reset_step=False, decrease_period=10, convex_proj=False,
-            save_path=None, save_freq=20):
+            early_stopping=True, reset_step=False, decrease_period=10, convex_proj=False, 
+            mic_batch_size=-1, freq_batch_size=-1, save_path=None, save_freq=20, compute_full_cost=15):
         """Set alternate to inf to compute full grad at each iteration, 0 to always alternate the vertex number."""
         log = dict(cost=[self.cost_fun()], grad=[], vert=[self.sim_p.poly.vertices.tolist()])
+        log["batch_size"] = [mic_batch_size, freq_batch_size]
+        log["freqs"], log["mics"] = [], []
+
+        if compute_full_cost:
+            self._reset_active_indices()
+            self.update_sim(update_state=True, update_adjoint=False)
+            log["full_cost"] = [self.cost_fun()]
+
         gradfun = self._get_gradfun()
 
         if self.parametrization == "half-planes":  # the origin is set at the source position
@@ -142,6 +169,9 @@ class ShapeOptimizer:
         print("initial cost:", self.cost_fun())
         while it < niter and jtol < cost and gtol < gradcost:
             t1 = time.time()
+
+            self.batch(freq_batch_size, mic_batch_size)  # update active indices for current iteration
+            log["freqs"].append(self._active_ind.tolist()), log["mics"].append(self._active_mic_ind.tolist())
 
             grad = np.zeros((len(self.sim_p.poly.vertices), 2))
             if it >= alternate:
@@ -177,11 +207,15 @@ class ShapeOptimizer:
             log["vert"].append(self.sim_p.poly.vertices.tolist())
             t2 = time.time()
             if self.verbose:
-                # print("rel_error: ", self.sim_p.evaluate_error(freq_ind=-1))
-                print("cost k: ", cost, "grad_norm k-1: ", gradcost, "ind_desc: ", rotation_ind, 
+                print("cost k: ", cost, "grad_norm k-1: ", gradcost, "ind_desc: ", rotation_ind,
                       "tgrad: ", tgrad, "titer: ", t2-t1)
                 print("current polygon: \n", self.sim_p.poly.vertices)
 
+            if compute_full_cost > 0 and (it + 1) % compute_full_cost == 0:
+                self._reset_active_indices()
+                self.update_sim(update_state=True, update_adjoint=False)
+                log["full_cost"] = [self.cost_fun()]
+                log["full_cost"].append(self.cost_fun())
             it += 1
 
             if (save_path is not None) and (it % save_freq == 0):
@@ -193,8 +227,9 @@ class ShapeOptimizer:
         self.sim_p.set_freq_ind_to_simulate(self._active_ind)
         self.sim_p.simulate(self.nprocess, verbose=False)
 
-        mic_val = self.sim_p.compute(self.mic_pos, self.nprocess, freq_ind=self._active_ind)
-        self.diffs = mic_val - self.observations[:, self._active_ind]
+        mic_val = self.sim_p.compute(self.mic_pos[self._active_mic_ind], self.nprocess, freq_ind=self._active_ind)
+        self.diffs = mic_val - self.observations[self._active_mic_ind[:, np.newaxis], self._active_ind[np.newaxis, :]]
+
         self.p_values = self.sim_p.compute(self.quad_points, self.nprocess, freq_ind=self._active_ind, use_src=True)
         self.cornerval_p = self.sim_p.compute_corner_values(use_src=True, freq_ind=self._active_ind)
 
@@ -210,7 +245,9 @@ class ShapeOptimizer:
 
     def _update_adjoint(self):
         self.sim_q.set_freq_ind_to_simulate(self._active_ind)
-        self.sim_q.src_ampl[:, self._active_ind] = - self.diffs  # update source amplitudes with observation errors
+        self.sim_q.src_ampl[:, :] = 0.  # reset source amplitudes
+        # update source amplitudes with observation errors, only consider active mics and freqs
+        self.sim_q.src_ampl[self._active_mic_ind[:, np.newaxis], self._active_ind[np.newaxis, :]] = - self.diffs
         self.sim_q.simulate(self.nprocess, verbose=False)
         self.q_values = self.sim_q.compute(self.quad_points, self.nprocess, freq_ind=self._active_ind)
         cornerval_q = self.sim_q.compute_corner_values(freq_ind=self._active_ind)
@@ -268,7 +305,7 @@ class ShapeOptimizer:
             vals += np.sum(np.sum(V_corners[i] * (renormed_edges[i] - renormed_edges[i-1])) *
                            np.real(self.corner_values[i, :]))
 
-        return vals / self.nmics / self._nactive
+        return vals / self._nactive_mic / self._nactive
 
     def partial_derivative(self, i):
         # generate a function psi_i on edges i, i-1 such that psi_i(i) = 1, psi_i(i-1) = 0 = psi_i(i+1)
@@ -294,7 +331,7 @@ class ShapeOptimizer:
         renormed_edge2 = self.sim_p.poly.edges[i-1] / np.linalg.norm(self.sim_p.poly.edges[i-1])
 
         res = res + (renormed_edge1 - renormed_edge2)*np.sum(np.real(self.corner_values[i, :]))
-        return res / self.nmics / self._nactive
+        return res / self._nactive_mic / self._nactive
 
     def partial_derivative_proji(self, i):
         V, V_corners = np.zeros((self.n_int, 2)), np.zeros((self.sim_p.poly.nedges, 2))
@@ -321,18 +358,10 @@ class ShapeOptimizer:
 
         return part_der # no normalization as it is done in evaluate_directional_derivative
 
-    def cost_fun(self, verbose=False):
-        self.counter["ncall"] += 1
-        if verbose:
-            print("{} calls".format(self.counter["ncall"]))
+    def cost_fun(self):
+        return 0.5*np.sum(np.real(self.diffs * self.diffs.conj())) / self._nactive_mic / self._nactive
 
-        return 0.5*np.sum(np.real(self.diffs * self.diffs.conj())) / self.nmics / self._nactive
-
-    def cost_fun_full(self, verbose=False):
-        self.counter["ncall"] += 1
-        if verbose:
-            print("{} calls".format(self.counter["ncall"]))
-
+    def cost_fun_full(self):
         return 0.5*np.real(self.diffs*self.diffs.conj())
 
     def _get_gradfun(self):

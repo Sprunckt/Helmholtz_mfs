@@ -64,7 +64,6 @@ class ShapeOptimizer:
         self._active_mic_ind = np.arange(self.nmics)
         self._nactive_mic = self.nmics
         
-        self.update_sim()
         self.nfreqs = nfreq
         self.nedges = self.sim_p.poly.nedges
         self._generator = np.random.default_rng()
@@ -149,19 +148,26 @@ class ShapeOptimizer:
             early_stopping=True, reset_step=False, decrease_period=10, convex_proj=False, 
             mic_batch_size=-1, freq_batch_size=-1, save_path=None, save_freq=20, compute_full_cost=15):
         """Set alternate to inf to compute full grad at each iteration, 0 to always alternate the vertex number."""
-        log = dict(cost=[self.cost_fun()], grad=[], vert=[self.sim_p.poly.vertices.tolist()])
+        log = dict(grad=[], vert=[self.sim_p.poly.vertices.tolist()])
+        
+        if compute_full_cost:
+            self._reset_active_indices()
+            log["full_cost"] = []
+
+        if mic_batch_size > 0 or freq_batch_size > 0:
+            batch = True
+            self.batch(freq_batch_size, mic_batch_size)
+        else:
+            batch = False
+
+        self.update_sim()
+
         log["batch_size"] = [mic_batch_size, freq_batch_size]
         log["freqs"], log["mics"] = [], []
 
-        if compute_full_cost:
-            self._reset_active_indices()
-            log["full_cost"] = [self.cost_fun()]
+        log["cost"] = [self.cost_fun()]
 
-        if mic_batch_size > 0 or freq_batch_size > 0:
-            self.batch(freq_batch_size, mic_batch_size)
-            self.update_sim(update_state=True, update_adjoint=True)
-
-        gradfun = self._get_gradfun()
+        gradfun = self._get_gradfun()  # select the shape gradient based on parametrization
 
         if self.parametrization == "half-planes":  # the origin is set at the source position
             in_constraints = self.mic_pos
@@ -169,7 +175,7 @@ class ShapeOptimizer:
             in_constraints = np.concatenate([self.mic_pos, self.source_pos], axis=0)
 
         it, cost, gradcost, rotation_ind, decrease_ind = 0, np.inf, np.inf, 0, 0
-        print("initial cost:", self.cost_fun())
+        print("initial cost:", log["cost"][0])
         while it < niter and jtol < cost and gtol < gradcost:
             t1 = time.time()
 
@@ -220,7 +226,9 @@ class ShapeOptimizer:
                 log["full_cost"].append(self.cost_fun())
             it += 1
 
-            self.batch(freq_batch_size, mic_batch_size)  # update active indices
+            if batch:
+                self.batch(freq_batch_size, mic_batch_size)  # update active indices
+                self.update_sim()
 
             if (save_path is not None) and (it % save_freq == 0):
                 dict_to_json(log, save_path)

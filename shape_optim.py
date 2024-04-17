@@ -221,6 +221,7 @@ class ShapeOptimizer:
 
                 if decrease_ind == decrease_period:
                     step *= step_decrease
+                    decrease_ind = 0
             
             gradcost = np.linalg.norm(grad)
 

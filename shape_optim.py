@@ -83,7 +83,7 @@ class ShapeOptimizer:
         best_weights = self.sim_p.mfs.room_bound.copy(), self.sim_p.vpos.copy(), self.sim_p.ampl.copy()
         new_step, curr_step, best_step = step, step, step
         init_decrease = False  # True if costfun decreases at first step 
-
+        print("starting cost: ", start_cost) 
         for i in range(neval_search):
             curr_step = new_step
             new_params = curr_params - curr_step*grad
@@ -146,13 +146,14 @@ class ShapeOptimizer:
 
     def fit(self, niter=100, jtol=1e-5, gtol=1e-6, step=1e-3, alternate=np.inf, neval_search=3, step_decrease=0.85,
             early_stopping=True, reset_step=False, decrease_period=10, convex_proj=False, 
-            mic_batch_size=-1, freq_batch_size=-1, save_path=None, save_freq=20, compute_full_cost=15):
+            mic_batch_size=-1, freq_batch_size=-1, save_path=None, save_freq=20, compute_full_cost=0):
         """Set alternate to inf to compute full grad at each iteration, 0 to always alternate the vertex number."""
-        log = dict(grad=[], vert=[self.sim_p.poly.vertices.tolist()])
-        
-        if compute_full_cost:
-            self._reset_active_indices()
-            log["full_cost"] = []
+        log = dict(grad=[], vert=[self.sim_p.poly.vertices.tolist()], signals=[])
+        self._reset_active_indices()
+
+        if compute_full_cost > 0:
+            self.update_sim(update_state=True, update_adjoint=False)
+            log["full_cost"] = [self.cost_fun()]
 
         if mic_batch_size > 0 or freq_batch_size > 0:
             batch = True
@@ -163,7 +164,6 @@ class ShapeOptimizer:
         self.update_sim()
 
         log["batch_size"] = [mic_batch_size, freq_batch_size]
-        log["freqs"], log["mics"] = [], []
 
         log["cost"] = [self.cost_fun()]
 
@@ -179,7 +179,6 @@ class ShapeOptimizer:
         while it < niter and jtol < cost and gtol < gradcost:
             t1 = time.time()
 
-            log["freqs"].append(self._active_ind.tolist()), log["mics"].append(self._active_mic_ind.tolist())
 
             grad = np.zeros((len(self.sim_p.poly.vertices), 2))
             if it >= alternate:
@@ -213,17 +212,18 @@ class ShapeOptimizer:
             log["cost"].append(cost)
             log["grad"].append(grad.tolist())
             log["vert"].append(self.sim_p.poly.vertices.tolist())
+            log["signals"].append(self.cost_fun_full().tolist())
             t2 = time.time()
             if self.verbose:
                 print("cost k: ", cost, "grad_norm k-1: ", gradcost, "ind_desc: ", rotation_ind,
                       "tgrad: ", tgrad, "titer: ", t2-t1)
                 print("current polygon: \n", self.sim_p.poly.vertices)
 
-            if compute_full_cost > 0 and (it + 1) % compute_full_cost == 0:
+            if (compute_full_cost > 0) and (((it + 1) % compute_full_cost) == 0):
                 self._reset_active_indices()
                 self.update_sim(update_state=True, update_adjoint=False)
-                log["full_cost"] = [self.cost_fun()]
                 log["full_cost"].append(self.cost_fun())
+                print("full cost: ", log["full_cost"])
             it += 1
 
             if batch:

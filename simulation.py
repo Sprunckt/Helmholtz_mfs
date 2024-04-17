@@ -320,7 +320,7 @@ class Simulation:
 
     def get_ind(self, fmin, fmax):
         """Return indices from the range of frequencies [fmin, fmax]"""
-        return np.where((self.freqs >= fmin) & (self.freqs <= fmax))[0]
+        return np.where((self.freqs > fmin) & (self.freqs <= fmax))[0]
 
     def set_freq_ind_to_simulate(self, ind_sim):
         self._to_simulate[:] = False

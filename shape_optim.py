@@ -182,7 +182,7 @@ class ShapeOptimizer:
         log["schedule"] = schedule
 
         log["cost"] = [self.cost_fun()]
-
+        log["max_freq"] = []
         gradfun = self._get_gradfun()  # select the shape gradient based on parametrization
 
         if self.parametrization == "half-planes":  # the origin is set at the source position
@@ -228,6 +228,7 @@ class ShapeOptimizer:
             log["grad"].append(grad.tolist())
             log["vert"].append(self.sim_p.poly.vertices.tolist())
             log["signals"].append(self.cost_fun_full().tolist())
+            log["max_freq"].append(self.max_freq)
             t2 = time.time()
             if self.verbose:
                 print("cost k: ", cost, "grad_norm k-1: ", gradcost, "ind_desc: ", rotation_ind,

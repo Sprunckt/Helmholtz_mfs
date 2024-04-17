@@ -254,7 +254,7 @@ class Polygon:
         if convex_proj:
             new_vert = new_vert[ConvexHull(new_vert).vertices]
 
-        self.vertices = new_vert
+        self.vertices = new_vert.copy()
         if sort:
             self.sort_vertices()
         if len(self.vertices) < 3:

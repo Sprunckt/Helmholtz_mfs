@@ -101,8 +101,6 @@ class ShapeOptimizer:
                 print("cost: ", new_cost)
 
             if new_cost < best_cost:
-                if i == 0:
-                    init_decrease = True
                 best_cost = new_cost
                 best_weights = self.sim_p.mfs.room_bound.copy(), self.sim_p.vpos.copy(), self.sim_p.ampl.copy()
                 best_params, best_step = new_params.copy(), curr_step
@@ -114,7 +112,7 @@ class ShapeOptimizer:
                             print("costfunction decreased, early stopping")
                         break
 
-        self.update_sim(best_params, update_state=False, update_adjoint=False)
+        self.update_sim(best_params, update_state=False, update_adjoint=False, convex_proj=convex_proj)
         self.sim_p.load(*best_weights)
         self._update_adjoint()
         if reset:
@@ -289,6 +287,7 @@ class ShapeOptimizer:
             if success:
                 self.sim_q.update_poly(new_params, parametrization=self.parametrization, convex_proj=convex_proj)
                 self._update_quadrature_points()
+
         else:
             success = True
 

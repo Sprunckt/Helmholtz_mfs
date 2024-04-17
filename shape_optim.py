@@ -59,7 +59,9 @@ class ShapeOptimizer:
 
         # active frequency indices used in the cost function/gradient computations
         self._active_ind = np.arange(1, self.sim_p.nfreqs)
+        self._possible_ind = np.arange(1, self.sim_p.nfreqs)
         self._nactive = self.sim_p.nfreqs - 1
+        self.max_freq = self.sim_p.freqs[-1]
         
         self._active_mic_ind = np.arange(self.nmics)
         self._nactive_mic = self.nmics
@@ -127,14 +129,6 @@ class ShapeOptimizer:
         interv = np.where(np.diff(self.quad_ids) != 0)[0]
         self.quad_intervals[0], self.quad_intervals[-1] = [0, interv[0]], [interv[-1] + 1, len(self.quad_ids) - 1]
         self.quad_intervals[1:-1] = np.stack([interv[:-1] + 1, interv[1:]], axis=1)
-    
-    def batch(self, freq_batch_size, mic_batch_size):
-        if freq_batch_size > 0:
-            self._active_ind = self._generator.choice(np.arange(1, self.sim_p.nfreqs), freq_batch_size, replace=False)
-            self._nactive = freq_batch_size
-        if mic_batch_size > 0:
-            self._active_mic_ind = self._generator.choice(np.arange(self.nmics), mic_batch_size, replace=False)
-            self._nactive_mic = mic_batch_size
 
     def _reset_active_indices(self):
         self._active_ind = np.arange(1, self.sim_p.nfreqs)
@@ -142,26 +136,50 @@ class ShapeOptimizer:
         self._active_mic_ind = np.arange(self.nmics)
         self._nactive_mic = self.nmics
 
+    def _update_active_indices(self, schedule, it):
+        updated = False
+        if it == schedule["update_its"][schedule["update_ind"]]:
+            self.max_freq = schedule["max_freqs"][schedule["update_ind"]]
+            print("updating max frequency to: ", self.max_freq, "at iteration: ", it)
+            schedule["update_ind"] += 1
+            self._possible_ind = self.sim_p.get_ind(0., self.max_freq)
+            self._active_ind = self._possible_ind.copy()
+            self._nactive = len(self._active_ind)
+            updated = True
+
+        if schedule["freq_batch_size"] > 0:
+            self._active_ind = self._generator.choice(self._possible_ind, schedule["freq_batch_size"], replace=False)
+            self._nactive = schedule["freq_batch_size"]
+            updated = True
+        if schedule["mic_batch_size"] > 0:
+            self._active_mic_ind = self._generator.choice(np.arange(self.nmics), schedule["mic_batch_size"],
+                                                          replace=False)
+            self._nactive_mic = schedule["mic_batch_size"]
+            updated = True
+
+        return updated
+
     def fit(self, niter=100, jtol=1e-5, gtol=1e-6, step=1e-3, alternate=np.inf, neval_search=3, step_decrease=0.85,
-            early_stopping=True, reset_step=False, decrease_period=10, convex_proj=False, 
-            mic_batch_size=-1, freq_batch_size=-1, save_path=None, save_freq=20, compute_full_cost=0):
-        """Set alternate to inf to compute full grad at each iteration, 0 to always alternate the vertex number."""
+            early_stopping=True, reset_step=False, decrease_period=10, convex_proj=False,
+            schedule=None, save_path=None, save_freq=20, compute_full_cost=0):
+        """Set alternate to inf to compute full grad at each iteration, 0 to always alternate the vertex number.
+        schedule is a dictionary with keys: mic_batch_size, freq_batch_size, max_freqs, update_its. max_freqs and
+        update_its are lists of the same length, indicating the maximum frequencies and the iteration at which to update
+        the maximume frequency to the next value."""
         log = dict(grad=[], vert=[self.sim_p.poly.vertices.tolist()], signals=[])
-        self._reset_active_indices()
 
         if compute_full_cost > 0:
+            self._reset_active_indices()
             self.update_sim(update_state=True, update_adjoint=False)
             log["full_cost"] = [self.cost_fun()]
 
-        if mic_batch_size > 0 or freq_batch_size > 0:
-            batch = True
-            self.batch(freq_batch_size, mic_batch_size)
-        else:
-            batch = False
-
+        if schedule is None:  # default schedule : no batch, start at maximum frequency
+            schedule = dict(mic_batch_size=0, freq_batch_size=0, max_freqs=[self.max_freq], update_its=[0, niter+1])
+        schedule["update_ind"] = 0
+        self._update_active_indices(schedule, 0)
         self.update_sim()
 
-        log["batch_size"] = [mic_batch_size, freq_batch_size]
+        log["schedule"] = schedule
 
         log["cost"] = [self.cost_fun()]
 
@@ -176,7 +194,6 @@ class ShapeOptimizer:
         print("initial cost:", log["cost"][0])
         while it < niter and jtol < cost and gtol < gradcost:
             t1 = time.time()
-
 
             grad = np.zeros((len(self.sim_p.poly.vertices), 2))
             if it >= alternate:
@@ -224,9 +241,9 @@ class ShapeOptimizer:
                 print("full cost: ", log["full_cost"])
             it += 1
 
-            if batch:
-                self.batch(freq_batch_size, mic_batch_size)  # update active indices
-                self.update_sim()
+            updated = self._update_active_indices(schedule, it)
+            if updated:
+                self.update_sim(update_state=True, update_adjoint=True)
 
             if (save_path is not None) and (it % save_freq == 0):
                 dict_to_json(log, save_path)

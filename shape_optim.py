@@ -180,7 +180,8 @@ class ShapeOptimizer:
         self.update_sim()
 
         log["schedule"] = schedule
-
+        assert len(schedule["max_freqs"]) == len(schedule["update_its"]), "max_freqs and update_its should have same length"
+        schedule["update_its"].append(np.inf)
         log["cost"] = [self.cost_fun()]
         log["max_freq"] = []
         gradfun = self._get_gradfun()  # select the shape gradient based on parametrization

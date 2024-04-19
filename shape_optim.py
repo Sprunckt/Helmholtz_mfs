@@ -2,6 +2,7 @@ from simulation import Simulation
 import numpy as np
 import time
 import json
+from utils import rotate, mod2pi
 
 
 def array_to_list(arr):
@@ -72,7 +73,7 @@ class ShapeOptimizer:
         self._generator = np.random.default_rng()
 
     def get_params(self):
-        return self.sim_p.poly.get_params(self.parametrization)
+        return self.sim_p.poly.get_params(self.parametrization).copy()
         
     def line_search(self, step, step_decrease, neval_search, grad, bounds=None, convex_proj=False,
                     early_stopping=False, reset=False, in_constraints=None, verbose=False):
@@ -160,6 +161,57 @@ class ShapeOptimizer:
             updated = True
 
         return updated
+
+    def rotation_fit(self, rotation_step, niter, jtol=1e-5, gtol=1e-5, step_decrease=0.85, nlinesearch=20,
+                     step_increase=1.1, increase_period=3, decrease_period=3):
+        """Do a local gradient descent on the rotation of the polygon, using the barycenter of the polygon as rotation
+        center. ! Only works with vertices parametrization (due to updating the simulation with vertex coordinates) !"""
+        curr_verts = self.sim_p.poly.vertices.copy()
+        barycenter = np.mean(curr_verts, axis=0)[None, :]
+        decrease_ind, increase_ind = 0, 0
+        it = 0
+        start_cost, grad = np.inf, np.inf
+        while it < niter and np.abs(grad) > gtol and start_cost > jtol:
+            start_cost = self.cost_fun()
+
+            grad = self.partial_derivative_rotation(barycenter)
+            print("it {}, starting cost: {}, grad: {}".format(it, start_cost, grad))
+            print("current polygon: \n", curr_verts)
+            init_decrease = False
+            for j in range(nlinesearch):
+                rotated_vert = rotate(points=curr_verts,
+                                      angle=mod2pi(-rotation_step*grad), center=barycenter)
+                success = self.update_sim(rotated_vert, update_state=True, update_adjoint=False)
+                if success:
+                    cost = self.cost_fun()
+                    print("step: ", rotation_step, " cost: ", cost)
+                    if cost < start_cost:
+                        curr_verts = rotated_vert
+                        self._update_adjoint()  # updating adjoint for next step
+                        print("Cost decreased, continuing")
+                        if j == 0:
+                            init_decrease = True
+                        break
+                    else:
+                        rotation_step *= step_decrease
+                else:
+                    print("Polygon update failed, decreasing step")
+                    rotation_step *= step_decrease
+            it += 1
+            if init_decrease:
+                decrease_ind = 0
+                increase_ind += 1
+                if increase_ind == increase_period:
+                    rotation_step *= step_increase
+                    increase_ind = 0
+            else:
+                decrease_ind += 1
+                increase_ind = 0
+                if decrease_ind == decrease_period:
+                    rotation_step *= step_decrease
+                    decrease_ind = 0
+
+        return self.sim_p.poly.vertices
 
     def fit(self, niter=100, jtol=1e-5, gtol=1e-6, step=1e-3, alternate=np.inf, neval_search=3, step_decrease=0.85,
             early_stopping=True, reset_step=False, decrease_period=10, increase_period=10, step_increase=1.2,
@@ -340,10 +392,10 @@ class ShapeOptimizer:
         normal_term = np.sum(V*normals, axis=1)
         beta_val = self.sim_p.mfs.beta[self.quad_ids]
         vals = normal_term * (np.sum(np.real(self.p_grads * self.q_grads.conj()), axis=(1, 2)) -
-                              np.sum(np.real(self.sim_p.wave_numbers[np.newaxis, :] ** 2 *
+                              np.sum(np.real(self.sim_p.wave_numbers[np.newaxis, self._active_ind] ** 2 *
                                              self.p_values * self.q_values.conj()), axis=1) +
                               2*np.sum(np.real(beta_val*beta_val.conj())[:, np.newaxis] *
-                                       self.sim_p.wave_numbers[np.newaxis, :]**2 *
+                                       self.sim_p.wave_numbers[np.newaxis, self._active_ind]**2 *
                                        np.real(self.p_values * self.q_values.conj()), axis=1))
 
         # integrate vals
@@ -407,13 +459,13 @@ class ShapeOptimizer:
 
         return part_der  # no normalization as it is done in evaluate_directional_derivative
 
-    def partial_derivative_rotation(self):
+    def partial_derivative_rotation(self, center):
+        """Partial derivative according to a rotation centered at the given point"""
         V, V_corners = np.zeros((self.n_int, 2)), np.zeros((self.sim_p.poly.nedges, 2))
-        origin = self.sim_p.poly.origin
         rot_der = np.array([[0, 1], [-1, 0]])
         # shape (nedges, 2)
         origin_vect_rot_der = np.sum(rot_der[None, :, :] *
-                                     (self.sim_p.poly.vertices - np.reshape(origin, [1, 2]))[:, None, :], axis=2)
+                                     (self.sim_p.poly.vertices - np.reshape(center, [1, 2]))[:, None, :], axis=2)
         for i in range(self.sim_p.poly.nedges):
             quad_ids = np.where(self.quad_ids == i)[0]
             nquad = len(quad_ids)
@@ -422,6 +474,7 @@ class ShapeOptimizer:
             V[quad_ids] = (alpha[:, None]*origin_vect_rot_der[i] +
                            (1 - alpha)[:, None]*origin_vect_rot_der[(i+1) % self.sim_p.poly.nedges])
             V_corners[i] = origin_vect_rot_der[i]
+        print(V.shape, V_corners.shape)
         return self.evaluate_directional_derivative(V, V_corners)
 
     def cost_fun(self):

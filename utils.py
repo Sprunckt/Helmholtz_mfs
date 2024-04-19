@@ -485,3 +485,9 @@ def compute_intersections(p1, vector1, p2, vectors2, tol=1e-6):
     res[indfinite, 0] = (dotprod1*vectors2[indfinite, 1] - dotprods2[indfinite]*vector1[1]) / crossprod[indfinite]
     res[indfinite, 1] = (-dotprod1*vectors2[indfinite, 0] + dotprods2[indfinite]*vector1[0]) / crossprod[indfinite]
     return res
+
+
+def rotate(points, angle, center):
+    """Rotate points by an angle around a center. Points and center are numpy arrays."""
+    rot = np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]])
+    return (points - center) @ rot + center

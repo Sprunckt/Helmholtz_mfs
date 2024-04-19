@@ -405,7 +405,24 @@ class ShapeOptimizer:
         V_corners[i], V_corners[indnext] = epsiy * edgei, epsiyp * edgeip
         part_der[1] = self.evaluate_directional_derivative(V, V_corners)
 
-        return part_der # no normalization as it is done in evaluate_directional_derivative
+        return part_der  # no normalization as it is done in evaluate_directional_derivative
+
+    def partial_derivative_rotation(self):
+        V, V_corners = np.zeros((self.n_int, 2)), np.zeros((self.sim_p.poly.nedges, 2))
+        origin = self.sim_p.poly.origin
+        rot_der = np.array([[0, 1], [-1, 0]])
+        # shape (nedges, 2)
+        origin_vect_rot_der = np.sum(rot_der[None, :, :] *
+                                     (self.sim_p.poly.vertices - np.reshape(origin, [1, 2]))[:, None, :], axis=2)
+        for i in range(self.sim_p.poly.nedges):
+            quad_ids = np.where(self.quad_ids == i)[0]
+            nquad = len(quad_ids)
+            alpha = np.linspace(1, 0, nquad)
+
+            V[quad_ids] = (alpha[:, None]*origin_vect_rot_der[i] +
+                           (1 - alpha)[:, None]*origin_vect_rot_der[(i+1) % self.sim_p.poly.nedges])
+            V_corners[i] = origin_vect_rot_der[i]
+        return self.evaluate_directional_derivative(V, V_corners)
 
     def cost_fun(self):
         return 0.5*np.sum(np.real(self.diffs * self.diffs.conj())) / self._nactive_mic / self._nactive

@@ -62,7 +62,8 @@ class ShapeOptimizer:
         self._possible_ind = np.arange(1, self.sim_p.nfreqs)
         self._nactive = self.sim_p.nfreqs - 1
         self.max_freq = self.sim_p.freqs[-1]
-        
+        self.min_freq = 0.
+
         self._active_mic_ind = np.arange(self.nmics)
         self._nactive_mic = self.nmics
         
@@ -140,9 +141,10 @@ class ShapeOptimizer:
         updated = False
         if it == schedule["update_its"][schedule["update_ind"]]:
             self.max_freq = schedule["max_freqs"][schedule["update_ind"]]
-            print("updating max frequency to: ", self.max_freq, "at iteration: ", it)
+            self.min_freq = schedule["min_freqs"][schedule["update_ind"]]
+            print("updating min, max frequencies to: ", (self.min_freq, self.max_freq), "at iteration: ", it)
             schedule["update_ind"] += 1
-            self._possible_ind = self.sim_p.get_ind(0., self.max_freq)
+            self._possible_ind = self.sim_p.get_ind(self.min_freq, self.max_freq)
             self._active_ind = self._possible_ind.copy()
             self._nactive = len(self._active_ind)
             updated = True
@@ -160,30 +162,38 @@ class ShapeOptimizer:
         return updated
 
     def fit(self, niter=100, jtol=1e-5, gtol=1e-6, step=1e-3, alternate=np.inf, neval_search=3, step_decrease=0.85,
-            early_stopping=True, reset_step=False, decrease_period=10, convex_proj=False,
+            early_stopping=True, reset_step=False, decrease_period=10, increase_period=10, step_increase=1.2,
+            convex_proj=False,
             schedule=None, save_path=None, save_freq=20, compute_full_cost=0):
         """Set alternate to inf to compute full grad at each iteration, 0 to always alternate the vertex number.
         schedule is a dictionary with keys: mic_batch_size, freq_batch_size, max_freqs, update_its. max_freqs and
         update_its are lists of the same length, indicating the maximum frequencies and the iteration at which to update
         the maximume frequency to the next value."""
         log = dict(grad=[], vert=[self.sim_p.poly.vertices.tolist()], signals=[])
-
         if compute_full_cost > 0:
             self._reset_active_indices()
             self.update_sim(update_state=True, update_adjoint=False)
             log["full_cost"] = [self.cost_fun()]
 
         if schedule is None:  # default schedule : no batch, start at maximum frequency
-            schedule = dict(mic_batch_size=0, freq_batch_size=0, max_freqs=[self.max_freq], update_its=[0, niter+1])
+            schedule = dict(mic_batch_size=0, freq_batch_size=0, max_freqs=[self.max_freq], 
+                            min_freqs=[self.min_freq], update_its=[0], step_reset=None)
+        
+        print("Schedule: ", schedule)
+
         schedule["update_ind"] = 0
         self._update_active_indices(schedule, 0)
         self.update_sim()
 
         log["schedule"] = schedule
         assert len(schedule["max_freqs"]) == len(schedule["update_its"]), "max_freqs and update_its should have same length"
+
         schedule["update_its"].append(np.inf)
+
         log["cost"] = [self.cost_fun()]
         log["max_freq"] = []
+        log["min_freq"] = []
+
         gradfun = self._get_gradfun()  # select the shape gradient based on parametrization
 
         if self.parametrization == "half-planes":  # the origin is set at the source position
@@ -191,7 +201,7 @@ class ShapeOptimizer:
         else:  # in that case also check the source position
             in_constraints = np.concatenate([self.mic_pos, self.source_pos], axis=0)
 
-        it, cost, gradcost, rotation_ind, decrease_ind = 0, np.inf, np.inf, 0, 0
+        it, cost, gradcost, rotation_ind, decrease_ind, increase_ind = 0, np.inf, np.inf, 0, 0, 0
         print("initial cost:", log["cost"][0])
         while it < niter and jtol < cost and gtol < gradcost:
             t1 = time.time()
@@ -217,9 +227,13 @@ class ShapeOptimizer:
 
             if init_decreased:
                 decrease_ind = 0  # reset counter, cost function has decreased at first it of line search
+                increase_ind += 1
+                if increase_ind == increase_period:
+                    step *= step_increase
+                    increase_ind = 0
             else:
                 decrease_ind += 1
-
+                increase_ind = 0
                 if decrease_ind == decrease_period:
                     step *= step_decrease
                     decrease_ind = 0
@@ -229,8 +243,10 @@ class ShapeOptimizer:
             log["cost"].append(cost)
             log["grad"].append(grad.tolist())
             log["vert"].append(self.sim_p.poly.vertices.tolist())
-            log["signals"].append(self.cost_fun_full().tolist())
+            log["signals"].append(self.get_signals().tolist())
             log["max_freq"].append(self.max_freq)
+            log["min_freq"].append(self.min_freq)
+
             t2 = time.time()
             if self.verbose:
                 print("cost k: ", cost, "grad_norm k-1: ", gradcost, "ind_desc: ", rotation_ind,
@@ -396,6 +412,9 @@ class ShapeOptimizer:
 
     def cost_fun_full(self):
         return 0.5*np.real(self.diffs*self.diffs.conj())
+    
+    def get_signals(self):
+        return self.sim_p.compute(self.mic_pos[self._active_mic_ind], self.nprocess, freq_ind=self._active_ind)
 
     def _get_gradfun(self):
         if self.parametrization == "half-planes":

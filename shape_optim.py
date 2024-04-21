@@ -138,12 +138,15 @@ class ShapeOptimizer:
         self._active_mic_ind = np.arange(self.nmics)
         self._nactive_mic = self.nmics
 
-    def _update_active_indices(self, schedule, it):
+    def _update_active_indices(self, schedule, it, rotation_params):
         updated = False
-        if it == schedule["update_its"][schedule["update_ind"]]:
+        if it == schedule["update_its"][schedule["update_ind"]]:  # update min, max frequencies, do a rotation fit
             self.max_freq = schedule["max_freqs"][schedule["update_ind"]]
             self.min_freq = schedule["min_freqs"][schedule["update_ind"]]
             print("updating min, max frequencies to: ", (self.min_freq, self.max_freq), "at iteration: ", it)
+            if rotation_params is not None and schedule["rotation_fit"][schedule["update_ind"]]:
+                print("Doing rotation fit")
+                self.rotation_fit(**rotation_params)
             schedule["update_ind"] += 1
             self._possible_ind = self.sim_p.get_ind(self.min_freq, self.max_freq)
             self._active_ind = self._possible_ind.copy()
@@ -215,7 +218,7 @@ class ShapeOptimizer:
 
     def fit(self, niter=100, jtol=1e-5, gtol=1e-6, step=1e-3, alternate=np.inf, neval_search=3, step_decrease=0.85,
             early_stopping=True, reset_step=False, decrease_period=10, increase_period=10, step_increase=1.2,
-            convex_proj=False,
+            convex_proj=False, rotation_params=None,
             schedule=None, save_path=None, save_freq=20, compute_full_cost=0):
         """Set alternate to inf to compute full grad at each iteration, 0 to always alternate the vertex number.
         schedule is a dictionary with keys: mic_batch_size, freq_batch_size, max_freqs, update_its. max_freqs and
@@ -229,7 +232,8 @@ class ShapeOptimizer:
 
         if schedule is None:  # default schedule : no batch, start at maximum frequency
             schedule = dict(mic_batch_size=0, freq_batch_size=0, max_freqs=[self.max_freq], 
-                            min_freqs=[self.min_freq], update_its=[0], step_reset=None)
+                            min_freqs=[self.min_freq], update_its=[0, np.inf], step_reset=None,
+                            rotation_fit=[False])
         
         print("Schedule: ", schedule)
 
@@ -238,7 +242,8 @@ class ShapeOptimizer:
         self.update_sim()
 
         log["schedule"] = schedule
-        assert len(schedule["max_freqs"]) == len(schedule["update_its"]), "max_freqs and update_its should have same length"
+        assert len(schedule["max_freqs"]) == len(schedule["update_its"]), \
+            "max_freqs and update_its should have same length"
 
         schedule["update_its"].append(np.inf)
 
@@ -253,15 +258,15 @@ class ShapeOptimizer:
         else:  # in that case also check the source position
             in_constraints = np.concatenate([self.mic_pos, self.source_pos], axis=0)
 
-        it, cost, gradcost, rotation_ind, decrease_ind, increase_ind = 0, np.inf, np.inf, 0, 0, 0
+        it, cost, gradcost, alternate_ind, decrease_ind, increase_ind = 0, np.inf, np.inf, 0, 0, 0
         print("initial cost:", log["cost"][0])
         while it < niter and jtol < cost and gtol < gradcost:
             t1 = time.time()
 
             grad = np.zeros((len(self.sim_p.poly.vertices), 2))
             if it >= alternate:
-                grad[rotation_ind] = gradfun(rotation_ind)
-                rotation_ind = (rotation_ind + 1) % self.sim_p.poly.nedges 
+                grad[alternate_ind] = gradfun(alternate_ind)
+                alternate_ind = (alternate_ind + 1) % self.sim_p.poly.nedges
             else:
                 for i in range(len(self.sim_p.poly.vertices)):
                     grad[i] = gradfun(i)
@@ -269,7 +274,7 @@ class ShapeOptimizer:
             tgrad = time.time() - t1
 
             if self.verbose:
-                print("it: ", it, "descent ind: ", rotation_ind)
+                print("it: ", it, "descent ind: ", alternate_ind)
                 print("grad: ", grad)
 
             # reduce step size until cost function decreases
@@ -301,7 +306,7 @@ class ShapeOptimizer:
 
             t2 = time.time()
             if self.verbose:
-                print("cost k: ", cost, "grad_norm k-1: ", gradcost, "ind_desc: ", rotation_ind,
+                print("cost k: ", cost, "grad_norm k-1: ", gradcost, "ind_desc: ", alternate_ind,
                       "tgrad: ", tgrad, "titer: ", t2-t1)
                 print("current polygon: \n", self.sim_p.poly.vertices)
 
@@ -312,7 +317,7 @@ class ShapeOptimizer:
                 print("full cost: ", log["full_cost"])
             it += 1
 
-            updated = self._update_active_indices(schedule, it)
+            updated = self._update_active_indices(schedule, it, rotation_params)
             if updated:
                 self.update_sim(update_state=True, update_adjoint=True)
 

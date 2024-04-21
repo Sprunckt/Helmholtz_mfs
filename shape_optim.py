@@ -240,7 +240,7 @@ class ShapeOptimizer:
         print("Schedule: ", schedule)
 
         schedule["update_ind"] = 0
-        self._update_active_indices(schedule, 0)
+        self._update_active_indices(schedule, 0, rotation_params)
         self.update_sim()
 
         log["schedule"] = schedule
@@ -302,7 +302,10 @@ class ShapeOptimizer:
             log["cost"].append(cost)
             log["grad"].append(grad.tolist())
             log["vert"].append(self.sim_p.poly.vertices.tolist())
-            log["signals"].append(self.get_signals().tolist())
+            signals = self.get_signals()
+            log["signals_re"].append(signals.real().tolist())
+            log["signals_im"].append(signals.imag().tolist())
+
             log["max_freq"].append(self.max_freq)
             log["min_freq"].append(self.min_freq)
 

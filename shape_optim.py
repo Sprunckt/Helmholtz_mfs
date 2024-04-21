@@ -169,6 +169,7 @@ class ShapeOptimizer:
                      step_increase=1.1, increase_period=3, decrease_period=3):
         """Do a local gradient descent on the rotation of the polygon, using the barycenter of the polygon as rotation
         center. ! Only works with vertices parametrization (due to updating the simulation with vertex coordinates) !"""
+        tstart = time.time()
         curr_verts = self.sim_p.poly.vertices.copy()
         barycenter = np.mean(curr_verts, axis=0)[None, :]
         decrease_ind, increase_ind = 0, 0
@@ -213,6 +214,7 @@ class ShapeOptimizer:
                 if decrease_ind == decrease_period:
                     rotation_step *= step_decrease
                     decrease_ind = 0
+        print("Rotation descent done in ", time.time() - tstart)
 
         return self.sim_p.poly.vertices
 
@@ -479,7 +481,7 @@ class ShapeOptimizer:
             V[quad_ids] = (alpha[:, None]*origin_vect_rot_der[i] +
                            (1 - alpha)[:, None]*origin_vect_rot_der[(i+1) % self.sim_p.poly.nedges])
             V_corners[i] = origin_vect_rot_der[i]
-        print(V.shape, V_corners.shape)
+
         return self.evaluate_directional_derivative(V, V_corners)
 
     def cost_fun(self):

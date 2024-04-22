@@ -219,9 +219,63 @@ class ShapeOptimizer:
 
         return self.sim_p.poly.vertices
 
+    def translation_fit(self, translation_step, niter, jtol=1e-5, gtol=1e-5, step_decrease=0.85, nlinesearch=20,
+                        step_increase=1.1, increase_period=3, decrease_period=3, in_constraints=None):
+        """Do a local gradient descent on the rotation of the polygon, using the barycenter of the polygon as rotation
+        center. ! Only works with vertices parametrization (due to updating the simulation with vertex coordinates) !"""
+        tstart = time.time()
+        curr_verts = self.sim_p.poly.vertices.copy()
+        decrease_ind, increase_ind = 0, 0
+        it = 0
+        start_cost, grad = np.inf, np.inf
+        print("Starting translation descent")
+
+        while it < niter and np.abs(grad) > gtol and start_cost > jtol:
+            start_cost = self.cost_fun()
+
+            grad = self.partial_derivative_translation()
+            print("it {}, starting cost: {}, grad: {}".format(it, start_cost, grad))
+            print("current polygon: \n", curr_verts)
+            init_decrease = False
+            for j in range(nlinesearch):
+                translated_vert = curr_verts + translation_step * np.reshape(grad, [1, 2])
+                success = self.update_sim(translated_vert, update_state=True,
+                                          update_adjoint=False, check_in=in_constraints)
+                if success:
+                    cost = self.cost_fun()
+                    print("step: ", translation_step, " cost: ", cost)
+                    if cost < start_cost:
+                        curr_verts = translated_vert
+                        self._update_adjoint()  # updating adjoint for next step
+                        print("Cost decreased, continuing")
+                        if j == 0:
+                            init_decrease = True
+                        break
+                    else:
+                        translation_step *= step_decrease
+                else:
+                    print("Polygon update failed, decreasing step")
+                    translation_step *= step_decrease
+            it += 1
+            if init_decrease:
+                decrease_ind = 0
+                increase_ind += 1
+                if increase_ind == increase_period:
+                    translation_step *= step_increase
+                    increase_ind = 0
+            else:
+                decrease_ind += 1
+                increase_ind = 0
+                if decrease_ind == decrease_period:
+                    translation_step *= step_decrease
+                    decrease_ind = 0
+        print("Translation descent done in ", time.time() - tstart)
+
+        return self.sim_p.poly.vertices
+
     def fit(self, niter=100, jtol=1e-5, gtol=1e-6, step=1e-3, alternate=np.inf, neval_search=3, step_decrease=0.85,
             early_stopping=True, reset_step=False, decrease_period=10, increase_period=10, step_increase=1.2,
-            convex_proj=False, rotation_params=None,
+            convex_proj=False, rotation_params=None, translation_params=None,
             schedule=None, save_path=None, save_freq=20, compute_full_cost=0):
         """Set alternate to inf to compute full grad at each iteration, 0 to always alternate the vertex number.
         schedule is a dictionary with keys: mic_batch_size, freq_batch_size, max_freqs, update_its. max_freqs and
@@ -302,8 +356,11 @@ class ShapeOptimizer:
                 if decrease_ind == decrease_period:
                     step *= step_decrease
                     decrease_ind = 0
-            
+
             gradcost = np.linalg.norm(grad)
+
+            if translation_params is not None:
+                self.translation_fit(**translation_params)
 
             log["cost"].append(cost)
             log["grad"].append(grad.tolist())
@@ -316,16 +373,17 @@ class ShapeOptimizer:
             log["min_freq"].append(self.min_freq)
 
             t2 = time.time()
-            if self.verbose:
-                print("cost k: ", cost, "grad_norm k-1: ", gradcost, "ind_desc: ", alternate_ind,
-                      "tgrad: ", tgrad, "titer: ", t2-t1)
-                print("current polygon: \n", self.sim_p.poly.vertices)
 
             if (compute_full_cost > 0) and (((it + 1) % compute_full_cost) == 0):
                 self._reset_active_indices()
                 self.update_sim(update_state=True, update_adjoint=False)
                 log["full_cost"].append(self.cost_fun())
                 print("full cost: ", log["full_cost"])
+
+            if self.verbose:
+                print("cost k: ", cost, "grad_norm k-1: ", gradcost, "ind_desc: ", alternate_ind,
+                      "tgrad: ", tgrad, "titer: ", t2-t1)
+                print("current polygon: \n", self.sim_p.poly.vertices)
             it += 1
 
             updated = self._update_active_indices(schedule, it, rotation_params)
@@ -492,7 +550,15 @@ class ShapeOptimizer:
             V_corners[i] = origin_vect_rot_der[i]
 
         return self.evaluate_directional_derivative(V, V_corners)
-
+    def partial_derivative_translation(self):
+        der = np.zeros(2)
+        V, V_corners = np.zeros((self.n_int, 2)), np.zeros((self.sim_p.poly.nedges, 2))
+        V[:, 0], V_corners[:, 0] = 1., 1.
+        der[0] = self.evaluate_directional_derivative(V, V_corners)
+        V[:, 0], V_corners[:, 0] = 0., 0.
+        V[:, 1], V_corners[:, 1] = 1., 1.
+        der[1] = self.evaluate_directional_derivative(V, V_corners)
+        return der
     def cost_fun(self):
         return 0.5*np.sum(np.real(self.diffs * self.diffs.conj())) / self._nactive_mic / self._nactive
 

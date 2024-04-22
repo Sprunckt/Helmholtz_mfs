@@ -145,6 +145,7 @@ class ShapeOptimizer:
             self.min_freq = schedule["min_freqs"][schedule["update_ind"]]
             print("updating min, max frequencies to: ", (self.min_freq, self.max_freq), "at iteration: ", it)
             if rotation_params is not None and schedule["rotation_fit"][schedule["update_ind"]]:
+                
                 print("Doing rotation fit")
                 self.rotation_fit(**rotation_params)
             schedule["update_ind"] += 1
@@ -166,7 +167,7 @@ class ShapeOptimizer:
         return updated
 
     def rotation_fit(self, rotation_step, niter, jtol=1e-5, gtol=1e-5, step_decrease=0.85, nlinesearch=20,
-                     step_increase=1.1, increase_period=3, decrease_period=3):
+                     step_increase=1.1, increase_period=3, decrease_period=3, in_constraints=None):
         """Do a local gradient descent on the rotation of the polygon, using the barycenter of the polygon as rotation
         center. ! Only works with vertices parametrization (due to updating the simulation with vertex coordinates) !"""
         tstart = time.time()
@@ -185,7 +186,7 @@ class ShapeOptimizer:
             for j in range(nlinesearch):
                 rotated_vert = rotate(points=curr_verts,
                                       angle=mod2pi(-rotation_step*grad), center=barycenter)
-                success = self.update_sim(rotated_vert, update_state=True, update_adjoint=False)
+                success = self.update_sim(rotated_vert, update_state=True, update_adjoint=False, check_in=in_constraints)
                 if success:
                     cost = self.cost_fun()
                     print("step: ", rotation_step, " cost: ", cost)
@@ -227,6 +228,12 @@ class ShapeOptimizer:
         update_its are lists of the same length, indicating the maximum frequencies and the iteration at which to update
         the maximume frequency to the next value."""
         log = dict(grad=[], vert=[self.sim_p.poly.vertices.tolist()], signals=[])
+
+        if self.parametrization == "half-planes":  # the origin is set at the source position
+            in_constraints = self.mic_pos
+        else:  # in that case also check the source position
+            in_constraints = np.concatenate([self.mic_pos, self.source_pos], axis=0)
+
         if compute_full_cost > 0:
             self._reset_active_indices()
             self.update_sim(update_state=True, update_adjoint=False)
@@ -238,7 +245,8 @@ class ShapeOptimizer:
                             rotation_fit=[False])
         
         print("Schedule: ", schedule)
-
+        if rotation_params is not None:
+            rotation_params["in_constraints"] = in_constraints
         schedule["update_ind"] = 0
         self._update_active_indices(schedule, 0, rotation_params)
         self.update_sim()
@@ -250,15 +258,13 @@ class ShapeOptimizer:
         schedule["update_its"].append(np.inf)
 
         log["cost"] = [self.cost_fun()]
-        log["max_freq"] = []
-        log["min_freq"] = []
+        log["max_freq"] = [self.max_freq]
+        log["min_freq"] = [self.min_freq]
+        
+        signals = self.get_signals()
+        log["signals_re"], log["signals_im"] = [signals.real.tolist()], [signals.imag.tolist()]
 
         gradfun = self._get_gradfun()  # select the shape gradient based on parametrization
-
-        if self.parametrization == "half-planes":  # the origin is set at the source position
-            in_constraints = self.mic_pos
-        else:  # in that case also check the source position
-            in_constraints = np.concatenate([self.mic_pos, self.source_pos], axis=0)
 
         it, cost, gradcost, alternate_ind, decrease_ind, increase_ind = 0, np.inf, np.inf, 0, 0, 0
         print("initial cost:", log["cost"][0])
@@ -303,8 +309,8 @@ class ShapeOptimizer:
             log["grad"].append(grad.tolist())
             log["vert"].append(self.sim_p.poly.vertices.tolist())
             signals = self.get_signals()
-            log["signals_re"].append(signals.real().tolist())
-            log["signals_im"].append(signals.imag().tolist())
+            log["signals_re"].append(signals.real.tolist())
+            log["signals_im"].append(signals.imag.tolist())
 
             log["max_freq"].append(self.max_freq)
             log["min_freq"].append(self.min_freq)

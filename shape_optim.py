@@ -230,7 +230,7 @@ class ShapeOptimizer:
         start_cost, grad = np.inf, np.inf
         print("Starting translation descent")
 
-        while it < niter and np.abs(grad) > gtol and start_cost > jtol:
+        while it < niter and np.sum(np.abs(grad)) > gtol and start_cost > jtol:
             start_cost = self.cost_fun()
 
             grad = self.partial_derivative_translation()
@@ -238,7 +238,7 @@ class ShapeOptimizer:
             print("current polygon: \n", curr_verts)
             init_decrease = False
             for j in range(nlinesearch):
-                translated_vert = curr_verts + translation_step * np.reshape(grad, [1, 2])
+                translated_vert = curr_verts - translation_step * np.reshape(grad, [1, 2])
                 success = self.update_sim(translated_vert, update_state=True,
                                           update_adjoint=False, check_in=in_constraints)
                 if success:
@@ -271,7 +271,7 @@ class ShapeOptimizer:
                     decrease_ind = 0
         print("Translation descent done in ", time.time() - tstart)
 
-        return self.sim_p.poly.vertices
+        return translation_step
 
     def fit(self, niter=100, jtol=1e-5, gtol=1e-6, step=1e-3, alternate=np.inf, neval_search=3, step_decrease=0.85,
             early_stopping=True, reset_step=False, decrease_period=10, increase_period=10, step_increase=1.2,
@@ -360,7 +360,8 @@ class ShapeOptimizer:
             gradcost = np.linalg.norm(grad)
 
             if translation_params is not None:
-                self.translation_fit(**translation_params)
+                nt_step = self.translation_fit(**translation_params)
+                translation_params["translation_step"] = nt_step
 
             log["cost"].append(cost)
             log["grad"].append(grad.tolist())

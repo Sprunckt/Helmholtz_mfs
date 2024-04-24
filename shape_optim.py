@@ -138,16 +138,22 @@ class ShapeOptimizer:
         self._active_mic_ind = np.arange(self.nmics)
         self._nactive_mic = self.nmics
 
-    def _update_active_indices(self, schedule, it, rotation_params):
+    def _get_active_indices(self):
+        return self._active_ind, self._active_mic_ind
+    
+    def _set_active_indices(self, freq_ind, mic_ind):
+        self._nactive = len(freq_ind)
+        self._nactive_mic = len(mic_ind)
+        self._active_ind = freq_ind.copy()
+        self._active_mic_ind = mic_ind.copy()
+
+    def _update_active_indices(self, schedule, it):
         updated = False
         if it == schedule["update_its"][schedule["update_ind"]]:  # update min, max frequencies, do a rotation fit
             self.max_freq = schedule["max_freqs"][schedule["update_ind"]]
             self.min_freq = schedule["min_freqs"][schedule["update_ind"]]
             print("updating min, max frequencies to: ", (self.min_freq, self.max_freq), "at iteration: ", it)
-            if rotation_params is not None and schedule["rotation_fit"][schedule["update_ind"]]:
                 
-                print("Doing rotation fit")
-                self.rotation_fit(**rotation_params)
             schedule["update_ind"] += 1
             self._possible_ind = self.sim_p.get_ind(self.min_freq, self.max_freq)
             self._active_ind = self._possible_ind.copy()
@@ -176,6 +182,7 @@ class ShapeOptimizer:
         decrease_ind, increase_ind = 0, 0
         it = 0
         start_cost, grad = np.inf, np.inf
+        print("Starting rotation descent")
         while it < niter and np.abs(grad) > gtol and start_cost > jtol:
             start_cost = self.cost_fun()
 
@@ -215,14 +222,14 @@ class ShapeOptimizer:
                 if decrease_ind == decrease_period:
                     rotation_step *= step_decrease
                     decrease_ind = 0
-        print("Rotation descent done in ", time.time() - tstart)
+        print("Rotation descent done in {}s".format(time.time() - tstart))
 
-        return self.sim_p.poly.vertices
+        return rotation_step
 
     def translation_fit(self, translation_step, niter, jtol=1e-5, gtol=1e-5, step_decrease=0.85, nlinesearch=20,
                         step_increase=1.1, increase_period=3, decrease_period=3, in_constraints=None):
-        """Do a local gradient descent on the rotation of the polygon, using the barycenter of the polygon as rotation
-        center. ! Only works with vertices parametrization (due to updating the simulation with vertex coordinates) !"""
+        """Do a local gradient descent on the translation of the polygon 
+        ! Only works with vertices parametrization (due to updating the simulation with vertex coordinates) !"""
         tstart = time.time()
         curr_verts = self.sim_p.poly.vertices.copy()
         decrease_ind, increase_ind = 0, 0
@@ -269,7 +276,7 @@ class ShapeOptimizer:
                 if decrease_ind == decrease_period:
                     translation_step *= step_decrease
                     decrease_ind = 0
-        print("Translation descent done in ", time.time() - tstart)
+        print("Translation descent done in {}s".format(time.time() - tstart))
 
         return translation_step
 
@@ -296,13 +303,13 @@ class ShapeOptimizer:
         if schedule is None:  # default schedule : no batch, start at maximum frequency
             schedule = dict(mic_batch_size=0, freq_batch_size=0, max_freqs=[self.max_freq], 
                             min_freqs=[self.min_freq], update_its=[0, np.inf], step_reset=None,
-                            rotation_fit=[False])
+                            )
         
         print("Schedule: ", schedule)
         if rotation_params is not None:
             rotation_params["in_constraints"] = in_constraints
         schedule["update_ind"] = 0
-        self._update_active_indices(schedule, 0, rotation_params)
+        self._update_active_indices(schedule, 0)
         self.update_sim()
 
         log["schedule"] = schedule
@@ -311,12 +318,15 @@ class ShapeOptimizer:
 
         schedule["update_its"].append(np.inf)
 
+        act_ind, act_ind_mic = self._get_active_indices()
+        self._set_active_indices(act_ind, np.arange(self.nmics))
         log["cost"] = [self.cost_fun()]
-        log["max_freq"] = [self.max_freq]
-        log["min_freq"] = [self.min_freq]
-        
         signals = self.get_signals()
         log["signals_re"], log["signals_im"] = [signals.real.tolist()], [signals.imag.tolist()]
+        self._set_active_indices(act_ind, act_ind_mic)
+
+        log["max_freq"], log["min_freq"]= [self.max_freq], [self.min_freq]
+        log["ind_min"], log["ind_max"] = [float(np.min(self._active_ind))], [float(np.max(self._active_ind))]
 
         gradfun = self._get_gradfun()  # select the shape gradient based on parametrization
 
@@ -343,7 +353,7 @@ class ShapeOptimizer:
             cost, step, init_decreased = self.line_search(step, step_decrease, neval_search, grad, verbose=self.verbose,
                                                           early_stopping=early_stopping, reset=reset_step,
                                                           in_constraints=in_constraints, convex_proj=convex_proj)
-
+            
             if init_decreased:
                 decrease_ind = 0  # reset counter, cost function has decreased at first it of line search
                 increase_ind += 1
@@ -363,13 +373,25 @@ class ShapeOptimizer:
                 nt_step = self.translation_fit(**translation_params)
                 translation_params["translation_step"] = nt_step
 
+            if rotation_params is not None:
+                nr_step = self.rotation_fit(**rotation_params)
+                rotation_params["rotation_step"] = nr_step
+
+
+            act_ind, act_ind_mic = self._get_active_indices()
+            self._set_active_indices(act_ind, np.arange(self.nmics))
+            cost = self.cost_fun()
             log["cost"].append(cost)
-            log["grad"].append(grad.tolist())
-            log["vert"].append(self.sim_p.poly.vertices.tolist())
             signals = self.get_signals()
             log["signals_re"].append(signals.real.tolist())
             log["signals_im"].append(signals.imag.tolist())
+            self._set_active_indices(act_ind, act_ind_mic)  
+            log["ind_min"].append(float(np.min(self._active_ind))) 
+            log["ind_max"].append(float(np.max(self._active_ind)))
 
+            log["grad"].append(grad.tolist())
+            log["vert"].append(self.sim_p.poly.vertices.tolist())
+            
             log["max_freq"].append(self.max_freq)
             log["min_freq"].append(self.min_freq)
 
@@ -387,7 +409,7 @@ class ShapeOptimizer:
                 print("current polygon: \n", self.sim_p.poly.vertices)
             it += 1
 
-            updated = self._update_active_indices(schedule, it, rotation_params)
+            updated = self._update_active_indices(schedule, it)
             if updated:
                 self.update_sim(update_state=True, update_adjoint=True)
 

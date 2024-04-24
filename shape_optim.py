@@ -74,28 +74,27 @@ class ShapeOptimizer:
 
     def get_params(self):
         return self.sim_p.poly.get_params(self.parametrization).copy()
-        
-    def line_search(self, step, step_decrease, neval_search, grad, bounds=None, convex_proj=False,
-                    early_stopping=False, reset=False, in_constraints=None, verbose=False):
+
+
+    def line_search(self, step, step_decrease, neval_search, update_fun, grad_fun, bounds=None, convex_proj=False,
+                    in_constraints=None, verbose=False):
         if bounds is None:
             bounds = (-10., 10.)
 
         curr_params = self.get_params()
-        best_params = curr_params
         best_cost = np.inf
         start_cost = self.cost_fun()
-        best_weights = self.sim_p.mfs.room_bound.copy(), self.sim_p.vpos.copy(), self.sim_p.ampl.copy()
-        new_step, curr_step, best_step = step, step, step
-        init_decrease = False  # True if costfun decreases at first step 
+        curr_step = step
+        init_decrease = False  # True if costfun decreases at first step
+        grad = grad_fun()
         print("starting cost: ", start_cost) 
         for i in range(neval_search):
-            curr_step = new_step
-            new_params = curr_params - curr_step*grad
+            new_params = update_fun(curr_params, curr_step, grad)  # apply update
             if verbose:
                 print("step: ", curr_step)
             success = self.update_sim(new_params, update_state=True, update_adjoint=False, convex_proj=convex_proj,
                                       bounds=bounds, check_in=in_constraints, allow_reduce=False)
-            new_step = curr_step * step_decrease
+            curr_step = curr_step * step_decrease
 
             if not success:
                 print("Polygon update failed, skipping")
@@ -104,26 +103,20 @@ class ShapeOptimizer:
             if verbose:
                 print("cost: ", new_cost)
 
-            if new_cost < best_cost:
+            if new_cost < start_cost:
                 best_cost = new_cost
-                best_weights = self.sim_p.mfs.room_bound.copy(), self.sim_p.vpos.copy(), self.sim_p.ampl.copy()
-                best_params, best_step = new_params.copy(), curr_step
                 if best_cost < start_cost:
                     if i == 0:
                         init_decrease = True
-                    if early_stopping:
-                        if verbose:
-                            print("costfunction decreased, early stopping")
-                        break
+                    if verbose:
+                        print("costfunction decreased, early stopping")
+                    break
 
-        self.update_sim(best_params, update_state=False, update_adjoint=False, convex_proj=convex_proj)
-        self.sim_p.load(*best_weights)
         self._update_adjoint()
-        if reset:
-            best_step = step
+
         if best_cost == np.inf:
             print("No valid step found to update polygon, failure")
-        return best_cost, best_step, init_decrease
+        return best_cost, grad, init_decrease
 
     def _update_quadrature_points(self):
         self.quad_points, _, self.quad_ids, self.quad_nodes = self.sim_p.poly.sample(self.n_int, return_nodes=True,
@@ -172,117 +165,9 @@ class ShapeOptimizer:
 
         return updated
 
-    def rotation_fit(self, rotation_step, niter, jtol=1e-5, gtol=1e-5, step_decrease=0.85, nlinesearch=20,
-                     step_increase=1.1, increase_period=3, decrease_period=3, in_constraints=None):
-        """Do a local gradient descent on the rotation of the polygon, using the barycenter of the polygon as rotation
-        center. ! Only works with vertices parametrization (due to updating the simulation with vertex coordinates) !"""
-        tstart = time.time()
-        curr_verts = self.sim_p.poly.vertices.copy()
-        barycenter = np.mean(curr_verts, axis=0)[None, :]
-        decrease_ind, increase_ind = 0, 0
-        it = 0
-        start_cost, grad = np.inf, np.inf
-        print("Starting rotation descent")
-        while it < niter and np.abs(grad) > gtol and start_cost > jtol:
-            start_cost = self.cost_fun()
-
-            grad = self.partial_derivative_rotation(barycenter)
-            print("it {}, starting cost: {}, grad: {}".format(it, start_cost, grad))
-            print("current polygon: \n", curr_verts)
-            init_decrease = False
-            for j in range(nlinesearch):
-                rotated_vert = rotate(points=curr_verts,
-                                      angle=mod2pi(-rotation_step*grad), center=barycenter)
-                success = self.update_sim(rotated_vert, update_state=True, update_adjoint=False, check_in=in_constraints)
-                if success:
-                    cost = self.cost_fun()
-                    print("step: ", rotation_step, " cost: ", cost)
-                    if cost < start_cost:
-                        curr_verts = rotated_vert
-                        self._update_adjoint()  # updating adjoint for next step
-                        print("Cost decreased, continuing")
-                        if j == 0:
-                            init_decrease = True
-                        break
-                    else:
-                        rotation_step *= step_decrease
-                else:
-                    print("Polygon update failed, decreasing step")
-                    rotation_step *= step_decrease
-            it += 1
-            if init_decrease:
-                decrease_ind = 0
-                increase_ind += 1
-                if increase_ind == increase_period:
-                    rotation_step *= step_increase
-                    increase_ind = 0
-            else:
-                decrease_ind += 1
-                increase_ind = 0
-                if decrease_ind == decrease_period:
-                    rotation_step *= step_decrease
-                    decrease_ind = 0
-        print("Rotation descent done in {}s".format(time.time() - tstart))
-
-        return rotation_step
-
-    def translation_fit(self, translation_step, niter, jtol=1e-5, gtol=1e-5, step_decrease=0.85, nlinesearch=20,
-                        step_increase=1.1, increase_period=3, decrease_period=3, in_constraints=None):
-        """Do a local gradient descent on the translation of the polygon 
-        ! Only works with vertices parametrization (due to updating the simulation with vertex coordinates) !"""
-        tstart = time.time()
-        curr_verts = self.sim_p.poly.vertices.copy()
-        decrease_ind, increase_ind = 0, 0
-        it = 0
-        start_cost, grad = np.inf, np.inf
-        print("Starting translation descent")
-
-        while it < niter and np.sum(np.abs(grad)) > gtol and start_cost > jtol:
-            start_cost = self.cost_fun()
-
-            grad = self.partial_derivative_translation()
-            print("it {}, starting cost: {}, grad: {}".format(it, start_cost, grad))
-            print("current polygon: \n", curr_verts)
-            init_decrease = False
-            for j in range(nlinesearch):
-                translated_vert = curr_verts - translation_step * np.reshape(grad, [1, 2])
-                success = self.update_sim(translated_vert, update_state=True,
-                                          update_adjoint=False, check_in=in_constraints)
-                if success:
-                    cost = self.cost_fun()
-                    print("step: ", translation_step, " cost: ", cost)
-                    if cost < start_cost:
-                        curr_verts = translated_vert
-                        self._update_adjoint()  # updating adjoint for next step
-                        print("Cost decreased, continuing")
-                        if j == 0:
-                            init_decrease = True
-                        break
-                    else:
-                        translation_step *= step_decrease
-                else:
-                    print("Polygon update failed, decreasing step")
-                    translation_step *= step_decrease
-            it += 1
-            if init_decrease:
-                decrease_ind = 0
-                increase_ind += 1
-                if increase_ind == increase_period:
-                    translation_step *= step_increase
-                    increase_ind = 0
-            else:
-                decrease_ind += 1
-                increase_ind = 0
-                if decrease_ind == decrease_period:
-                    translation_step *= step_decrease
-                    decrease_ind = 0
-        print("Translation descent done in {}s".format(time.time() - tstart))
-
-        return translation_step
-
-    def fit(self, niter=100, jtol=1e-5, gtol=1e-6, step=1e-3, alternate=np.inf, neval_search=3, step_decrease=0.85,
-            early_stopping=True, reset_step=False, decrease_period=10, increase_period=10, step_increase=1.2,
-            convex_proj=False, rotation_params=None, translation_params=None,
+    def fit(self, niter=100, jtol=1e-5, gtol=1e-6, step=10, neval_search=3, step_decrease=0.85,
+            decrease_period=10, increase_period=10, step_increase=1.2, patience=3, decrease_patience=0.01,
+            convex_proj=False, rotation_step=50, translation_step=10,
             schedule=None, save_path=None, save_freq=20, compute_full_cost=0):
         """Set alternate to inf to compute full grad at each iteration, 0 to always alternate the vertex number.
         schedule is a dictionary with keys: mic_batch_size, freq_batch_size, max_freqs, update_its. max_freqs and
@@ -302,12 +187,10 @@ class ShapeOptimizer:
 
         if schedule is None:  # default schedule : no batch, start at maximum frequency
             schedule = dict(mic_batch_size=0, freq_batch_size=0, max_freqs=[self.max_freq], 
-                            min_freqs=[self.min_freq], update_its=[0, np.inf], step_reset=None,
+                            min_freqs=[self.min_freq], update_its=[0], step_reset=None,
                             )
         
         print("Schedule: ", schedule)
-        if rotation_params is not None:
-            rotation_params["in_constraints"] = in_constraints
         schedule["update_ind"] = 0
         self._update_active_indices(schedule, 0)
         self.update_sim()
@@ -325,58 +208,55 @@ class ShapeOptimizer:
         log["signals_re"], log["signals_im"] = [signals.real.tolist()], [signals.imag.tolist()]
         self._set_active_indices(act_ind, act_ind_mic)
 
-        log["max_freq"], log["min_freq"]= [self.max_freq], [self.min_freq]
-        log["ind_min"], log["ind_max"] = [float(np.min(self._active_ind))], [float(np.max(self._active_ind))]
+        log["max_freq"], log["min_freq"] = [self.max_freq], [self.min_freq]
+        log["ind_min"], log["ind_max"] = [int(np.min(self._active_ind))], [int(np.max(self._active_ind))]
+        log["descent_type"] = [0]
 
-        gradfun = self._get_gradfun()  # select the shape gradient based on parametrization
-
-        it, cost, gradcost, alternate_ind, decrease_ind, increase_ind = 0, np.inf, np.inf, 0, 0, 0
+        it, cost, gradcost, decrease_ind, increase_ind = 0, np.inf, np.inf, 0, 0
         print("initial cost:", log["cost"][0])
+        descent_type = 0  # 0: shape step, 1: translation step, 2: rotation step
+        steps = [step, translation_step, rotation_step]
+        descent_type_str = ["shape", "translation", "rotation"]
         while it < niter and jtol < cost and gtol < gradcost:
             t1 = time.time()
-
-            grad = np.zeros((len(self.sim_p.poly.vertices), 2))
-            if it >= alternate:
-                grad[alternate_ind] = gradfun(alternate_ind)
-                alternate_ind = (alternate_ind + 1) % self.sim_p.poly.nedges
-            else:
-                for i in range(len(self.sim_p.poly.vertices)):
-                    grad[i] = gradfun(i)
-                    
-            tgrad = time.time() - t1
-
             if self.verbose:
-                print("it: ", it, "descent ind: ", alternate_ind)
-                print("grad: ", grad)
+                print("it: {}, descent type: {}".format(it, descent_type_str[descent_type]))
 
-            # reduce step size until cost function decreases
-            cost, step, init_decreased = self.line_search(step, step_decrease, neval_search, grad, verbose=self.verbose,
-                                                          early_stopping=early_stopping, reset=reset_step,
-                                                          in_constraints=in_constraints, convex_proj=convex_proj)
-            
+            if descent_type == 0:  # moving vertices / edges
+
+                # reduce step size until cost function decreases
+                cost, grad, init_decreased = self.line_search(steps[descent_type], step_decrease, neval_search,
+                                                              update_fun=_step_update_params,
+                                                              grad_fun=self.get_gradient, verbose=self.verbose,
+                                                              in_constraints=in_constraints, convex_proj=convex_proj)
+            elif descent_type == 1:  # translation step
+                cost, grad, init_decreased = self.line_search(steps[descent_type], step_decrease, neval_search,
+                                                              update_fun=_step_update_translation,
+                                                              grad_fun=self.partial_derivative_translation,
+                                                              in_constraints=in_constraints)
+
+            elif descent_type == 2:  # rotation step
+                cost, grad, init_decreased = self.line_search(steps[descent_type], step_decrease, neval_search,
+                                                              update_fun=_step_update_rotation,
+                                                              grad_fun=self.partial_derivative_rotation,
+                                                              in_constraints=in_constraints)
+            else:
+                raise ValueError("Descent type not recognized")
+
             if init_decreased:
                 decrease_ind = 0  # reset counter, cost function has decreased at first it of line search
                 increase_ind += 1
                 if increase_ind == increase_period:
-                    step *= step_increase
+                    steps[descent_type] *= step_increase
                     increase_ind = 0
             else:
                 decrease_ind += 1
                 increase_ind = 0
                 if decrease_ind == decrease_period:
-                    step *= step_decrease
+                    steps[descent_type] *= step_decrease
                     decrease_ind = 0
 
             gradcost = np.linalg.norm(grad)
-
-            if translation_params is not None:
-                nt_step = self.translation_fit(**translation_params)
-                translation_params["translation_step"] = nt_step
-
-            if rotation_params is not None:
-                nr_step = self.rotation_fit(**rotation_params)
-                rotation_params["rotation_step"] = nr_step
-
 
             act_ind, act_ind_mic = self._get_active_indices()
             self._set_active_indices(act_ind, np.arange(self.nmics))
@@ -389,12 +269,19 @@ class ShapeOptimizer:
             log["ind_min"].append(float(np.min(self._active_ind))) 
             log["ind_max"].append(float(np.max(self._active_ind)))
 
+            log["descent_type"].append(descent_type)
             log["grad"].append(grad.tolist())
             log["vert"].append(self.sim_p.poly.vertices.tolist())
             
             log["max_freq"].append(self.max_freq)
             log["min_freq"].append(self.min_freq)
 
+            # updating descent type based on patience
+            if (it > patience and
+                    np.abs((log["cost"][-1] - log["cost"][-patience]) / log["cost"][-patience]) < decrease_patience):
+                decrease_ind, increase_ind = 0, 0
+                descent_type = (descent_type + 1) % 3
+                print("changing descent type to ", descent_type_str[descent_type])
             t2 = time.time()
 
             if (compute_full_cost > 0) and (((it + 1) % compute_full_cost) == 0):
@@ -404,8 +291,8 @@ class ShapeOptimizer:
                 print("full cost: ", log["full_cost"])
 
             if self.verbose:
-                print("cost k: ", cost, "grad_norm k-1: ", gradcost, "ind_desc: ", alternate_ind,
-                      "tgrad: ", tgrad, "titer: ", t2-t1)
+                print("iteration {} done".format(it))
+                print("cost: ", cost, "grad_norm k-1: ", gradcost, "titer: ", t2-t1)
                 print("current polygon: \n", self.sim_p.poly.vertices)
             it += 1
 
@@ -573,6 +460,7 @@ class ShapeOptimizer:
             V_corners[i] = origin_vect_rot_der[i]
 
         return self.evaluate_directional_derivative(V, V_corners)
+
     def partial_derivative_translation(self):
         der = np.zeros(2)
         V, V_corners = np.zeros((self.n_int, 2)), np.zeros((self.sim_p.poly.nedges, 2))
@@ -582,6 +470,7 @@ class ShapeOptimizer:
         V[:, 1], V_corners[:, 1] = 1., 1.
         der[1] = self.evaluate_directional_derivative(V, V_corners)
         return der
+
     def cost_fun(self):
         return 0.5*np.sum(np.real(self.diffs * self.diffs.conj())) / self._nactive_mic / self._nactive
 
@@ -618,3 +507,17 @@ class ShapeOptimizer:
             res[i] = self.cost_fun()
         return res
 
+
+def _step_update_params(params, step, grad):
+    return params - step * grad
+
+
+def _step_update_translation(verts, step, grad):
+    translated_vert = verts - step * np.reshape(grad, [1, 2])
+    return translated_vert
+
+
+def _step_update_rotation(verts, step, grad):
+    barycenter = np.mean(verts, axis=0)[None, :]
+    rotated_vert = rotate(points=verts, angle=mod2pi(-step * grad), center=barycenter)
+    return rotated_vert

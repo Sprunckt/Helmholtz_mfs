@@ -2,8 +2,7 @@ from simulation import Simulation
 import numpy as np
 import time
 import json
-from utils import rotate, mod2pi
-
+from utils import rotate, mod2pi, random_poly
 
 def array_to_list(arr):
     """Converts arr to a list if arr is an ndarray, leave as it is otherwise."""
@@ -187,8 +186,7 @@ class ShapeOptimizer:
 
         if schedule is None:  # default schedule : no batch, start at maximum frequency
             schedule = dict(mic_batch_size=0, freq_batch_size=0, max_freqs=[self.max_freq], 
-                            min_freqs=[self.min_freq], step_reset=None,
-                            )
+                            min_freqs=[self.min_freq], step_reset=None)
         
         print("Schedule: ", schedule)
         schedule["update_ind"] = 0
@@ -526,6 +524,49 @@ class ShapeOptimizer:
             self.update_sim(params, update_adjoint=False, update_state=True)
             res[i] = self.cost_fun()
         return res
+
+    def random_multiscale_fit(self, bounds, n_steps_final, n_steps_ini, max_freq_ini, min_freq_ini,
+                              fit_params, n_ini=10, save_path=None):
+        """Optimize shape using randomized initialization and refining frequencies at each restart.
+        - bounds: list of 2 tuples (for x and y), lower and upper bounds for the random vertices.
+        - n_steps_final: number of steps for the final (refined) optimization
+        - n_steps_ini: number of steps for the initial random optimization
+        - max_freq_ini, min_freq_ini: initial frequency range
+        - fit_params: dictionary containing the optimization parameters (should contain a valid schedule)
+        - n_ini: number of random initializations
+        - save_path: path to save the optimization results
+        """
+
+        in_constraints = np.concatenate([self.mic_pos, self.source_pos], axis=0)
+        max_freqs_copy = fit_params["schedule"]["max_freqs"].copy()
+        min_freqs_copy = fit_params["schedule"]["min_freqs"].copy()
+        fit_params["niter"] = n_steps_ini
+        fit_params["schedule"]["max_freqs"], fit_params["schedule"]["min_freqs"] = [max_freq_ini], [min_freq_ini]
+        best_cost = np.inf
+        print("Starting random initialization")
+        best_res = None
+        for j in range(n_ini):
+            if save_path is not None:  # contain base path
+                fit_params["save_path"] = save_path.split(".json")[0] + "_{}.json".format(j)
+            print("Initialization number: ", j)
+            vertices = random_poly(bounds, self.sim_p.poly.nedges, in_constraints=in_constraints)
+            self.update_sim(vertices, update_adjoint=False, update_state=False)
+            res, log = self.fit(**fit_params)
+            if res[-1] < best_cost:
+                best_cost = res[-1]
+                best_res = res
+
+        print("Random initialization done, best cost: ", best_cost)
+        print("Starting multiscale optimization")
+        fit_params["schedule"]["max_freqs"], fit_params["schedule"]["min_freqs"] = max_freqs_copy, min_freqs_copy
+        fit_params["niter"] = n_steps_final
+        if best_res is not None:
+            self.update_sim(best_res, update_adjoint=False, update_state=False)
+        else:
+            print("No valid initialization found, stopping")
+            return None
+
+        return self.fit(**fit_params)  # return the final optimization result
 
 
 def _step_update_params(params, step, grad):

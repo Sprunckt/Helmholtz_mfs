@@ -491,3 +491,15 @@ def rotate(points, angle, center):
     """Rotate points by an angle around a center. Points and center are numpy arrays."""
     rot = np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]])
     return (points - center) @ rot + center
+
+
+def random_poly(bounds, nvertices, in_constraints=None):
+    xmin, xmax = bounds[0]
+    ymin, ymax = bounds[1]
+    while True:
+        vertices = np.random.rand([nvertices, 2])*np.array([xmax - xmin, ymax - ymin]) + np.array([xmin, ymin])
+        vertices = vertices[ConvexHull(vertices).vertices]
+        if len(vertices) == nvertices:
+            poly = Polygon(vertices)
+            if in_constraints is not None and np.all(poly.is_in(in_constraints)):
+                return poly

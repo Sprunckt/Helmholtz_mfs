@@ -112,10 +112,11 @@ class ShapeOptimizer:
                         print("costfunction decreased, early stopping")
                     break
 
-        self._update_adjoint()
-
         if best_cost == np.inf:
             print("No valid step found to update polygon, failure")
+        else:
+            self._update_adjoint()
+
         return best_cost, grad, init_decrease
 
     def _update_quadrature_points(self):
@@ -140,33 +141,32 @@ class ShapeOptimizer:
         self._active_ind = freq_ind.copy()
         self._active_mic_ind = mic_ind.copy()
 
-    def _update_active_indices(self, schedule, it):
-        updated = False
-        if it == schedule["update_its"][schedule["update_ind"]]:  # update min, max frequencies, do a rotation fit
+    def _update_active_indices(self, schedule):  # increase frequency range
+        if schedule["update_ind"] < len(schedule["max_freqs"]):
+            # update min, max frequencies
             self.max_freq = schedule["max_freqs"][schedule["update_ind"]]
             self.min_freq = schedule["min_freqs"][schedule["update_ind"]]
-            print("updating min, max frequencies to: ", (self.min_freq, self.max_freq), "at iteration: ", it)
+            print("updating min, max frequencies to: ", (self.min_freq, self.max_freq))
                 
             schedule["update_ind"] += 1
             self._possible_ind = self.sim_p.get_ind(self.min_freq, self.max_freq)
             self._active_ind = self._possible_ind.copy()
             self._nactive = len(self._active_ind)
-            updated = True
-
+            return True
+        else: 
+            return False 
+        
+    def _batch(self, schedule):
         if schedule["freq_batch_size"] > 0:
             self._active_ind = self._generator.choice(self._possible_ind, schedule["freq_batch_size"], replace=False)
             self._nactive = schedule["freq_batch_size"]
-            updated = True
         if schedule["mic_batch_size"] > 0:
             self._active_mic_ind = self._generator.choice(np.arange(self.nmics), schedule["mic_batch_size"],
                                                           replace=False)
             self._nactive_mic = schedule["mic_batch_size"]
-            updated = True
 
-        return updated
-
-    def fit(self, niter=100, jtol=1e-5, gtol=1e-6, step=10, neval_search=3, step_decrease=0.85,
-            decrease_period=10, increase_period=10, step_increase=1.2, patience=3, decrease_patience=0.01,
+    def fit(self, niter=100, jtol=1e-5, step=10, neval_search=3, step_decrease=0.85,
+            decrease_period=10, increase_period=10, step_increase=1.2, patience=5, decrease_patience=0.01, freq_patience=20,
             convex_proj=False, rotation_step=50, translation_step=10,
             schedule=None, save_path=None, save_freq=20, compute_full_cost=0):
         """Set alternate to inf to compute full grad at each iteration, 0 to always alternate the vertex number.
@@ -187,19 +187,17 @@ class ShapeOptimizer:
 
         if schedule is None:  # default schedule : no batch, start at maximum frequency
             schedule = dict(mic_batch_size=0, freq_batch_size=0, max_freqs=[self.max_freq], 
-                            min_freqs=[self.min_freq], update_its=[0], step_reset=None,
+                            min_freqs=[self.min_freq], step_reset=None,
                             )
         
         print("Schedule: ", schedule)
         schedule["update_ind"] = 0
-        self._update_active_indices(schedule, 0)
+        self._update_active_indices(schedule)
         self.update_sim()
 
         log["schedule"] = schedule
-        assert len(schedule["max_freqs"]) == len(schedule["update_its"]), \
-            "max_freqs and update_its should have same length"
-
-        schedule["update_its"].append(np.inf)
+        assert len(schedule["max_freqs"]) == len(schedule["min_freqs"]), \
+            "max_freqs and min_freqs should have same length"
 
         act_ind, act_ind_mic = self._get_active_indices()
         self._set_active_indices(act_ind, np.arange(self.nmics))
@@ -211,20 +209,20 @@ class ShapeOptimizer:
         log["max_freq"], log["min_freq"] = [self.max_freq], [self.min_freq]
         log["ind_min"], log["ind_max"] = [int(np.min(self._active_ind))], [int(np.max(self._active_ind))]
         log["descent_type"] = [0]
-
+        log["frequency_change"] = []
         it, cost, gradcost, decrease_ind, increase_ind = 0, np.inf, np.inf, 0, 0
         print("initial cost:", log["cost"][0])
         descent_type = 0  # 0: shape step, 1: translation step, 2: rotation step
         steps = [step, translation_step, rotation_step]
         descent_type_str = ["shape", "translation", "rotation"]
-        while it < niter and jtol < cost and gtol < gradcost:
+        patience_counter, freq_patience_counter = 0, 0
+        while it < niter and jtol < cost:
             t1 = time.time()
             if self.verbose:
                 print("it: {}, descent type: {}".format(it, descent_type_str[descent_type]))
 
+            # line search: reduce step size until cost function decreases
             if descent_type == 0:  # moving vertices / edges
-
-                # reduce step size until cost function decreases
                 cost, grad, init_decreased = self.line_search(steps[descent_type], step_decrease, neval_search,
                                                               update_fun=_step_update_params,
                                                               grad_fun=self.get_gradient, verbose=self.verbose,
@@ -234,7 +232,6 @@ class ShapeOptimizer:
                                                               update_fun=_step_update_translation,
                                                               grad_fun=self.partial_derivative_translation,
                                                               in_constraints=in_constraints)
-
             elif descent_type == 2:  # rotation step
                 cost, grad, init_decreased = self.line_search(steps[descent_type], step_decrease, neval_search,
                                                               update_fun=_step_update_rotation,
@@ -242,6 +239,10 @@ class ShapeOptimizer:
                                                               in_constraints=in_constraints)
             else:
                 raise ValueError("Descent type not recognized")
+
+            if cost == np.inf:
+                print("Optimization failed, stopping")
+                break
 
             if init_decreased:
                 decrease_ind = 0  # reset counter, cost function has decreased at first it of line search
@@ -266,8 +267,8 @@ class ShapeOptimizer:
             log["signals_re"].append(signals.real.tolist())
             log["signals_im"].append(signals.imag.tolist())
             self._set_active_indices(act_ind, act_ind_mic)  
-            log["ind_min"].append(float(np.min(self._active_ind))) 
-            log["ind_max"].append(float(np.max(self._active_ind)))
+            log["ind_min"].append(int(np.min(self._active_ind))) 
+            log["ind_max"].append(int(np.max(self._active_ind)))
 
             log["descent_type"].append(descent_type)
             log["grad"].append(grad.tolist())
@@ -277,11 +278,29 @@ class ShapeOptimizer:
             log["min_freq"].append(self.min_freq)
 
             # updating descent type based on patience
-            if (it > patience and
-                    np.abs((log["cost"][-1] - log["cost"][-patience]) / log["cost"][-patience]) < decrease_patience):
-                decrease_ind, increase_ind = 0, 0
-                descent_type = (descent_type + 1) % 3
-                print("changing descent type to ", descent_type_str[descent_type])
+            if patience_counter >= patience:  # meaning at least 'patience' iterations since last descent change
+                if np.abs((log["cost"][-1] - log["cost"][-patience]) / log["cost"][-patience]) < decrease_patience:
+                    decrease_ind, increase_ind, patience_counter = 0, 0, 0
+                    descent_type = (descent_type + 1) % 3
+                    print("changing descent type to ", descent_type_str[descent_type])
+            else:
+                patience_counter += 1
+            
+            if freq_patience_counter >= freq_patience:
+                if np.abs((log["cost"][-1] - log["cost"][-freq_patience]) / log["cost"][-freq_patience]) < decrease_patience:
+                    decrease_ind, increase_ind, patience_counter, freq_patience_counter = 0, 0, 0, 0
+                    descent_type = 0  # go back to shape optimization
+                    print("changing descent type to ", descent_type_str[descent_type])
+                    updated = self._update_active_indices(schedule)  # increase frequency range
+                    if updated:
+                        self.update_sim(update_state=True, update_adjoint=True)
+                        log["frequency_change"].append(it)
+            else:
+                freq_patience_counter += 1
+
+            if (schedule["freq_batch_size"] > 0) or (schedule["freq_batch_size"] > 0):
+                self._batch(schedule)
+                self.update_sim(update_adjoint=True, update_state=True)
             t2 = time.time()
 
             if (compute_full_cost > 0) and (((it + 1) % compute_full_cost) == 0):
@@ -296,12 +315,11 @@ class ShapeOptimizer:
                 print("current polygon: \n", self.sim_p.poly.vertices)
             it += 1
 
-            updated = self._update_active_indices(schedule, it)
-            if updated:
-                self.update_sim(update_state=True, update_adjoint=True)
-
             if (save_path is not None) and (it % save_freq == 0):
                 dict_to_json(log, save_path)
+
+        if save_path is not None:
+            dict_to_json(log, save_path)
 
         return self.sim_p.poly.vertices, log
 
@@ -443,10 +461,12 @@ class ShapeOptimizer:
 
         return part_der  # no normalization as it is done in evaluate_directional_derivative
 
-    def partial_derivative_rotation(self, center):
+    def partial_derivative_rotation(self, center=None):
         """Partial derivative according to a rotation centered at the given point"""
         V, V_corners = np.zeros((self.n_int, 2)), np.zeros((self.sim_p.poly.nedges, 2))
         rot_der = np.array([[0, 1], [-1, 0]])
+        if center is None:
+            center = np.mean(self.sim_p.poly.vertices, axis=0)
         # shape (nedges, 2)
         origin_vect_rot_der = np.sum(rot_der[None, :, :] *
                                      (self.sim_p.poly.vertices - np.reshape(center, [1, 2]))[:, None, :], axis=2)
@@ -521,3 +541,4 @@ def _step_update_rotation(verts, step, grad):
     barycenter = np.mean(verts, axis=0)[None, :]
     rotated_vert = rotate(points=verts, angle=mod2pi(-step * grad), center=barycenter)
     return rotated_vert
+

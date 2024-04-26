@@ -543,6 +543,7 @@ class ShapeOptimizer:
         fit_params["niter"] = n_steps_ini
         fit_params["schedule"]["max_freqs"], fit_params["schedule"]["min_freqs"] = [max_freq_ini], [min_freq_ini]
         best_cost = np.inf
+        old_steps = [fit_params["step"],fit_params["rotation_step"], fit_params["translation_step"]]
         print("Starting random initialization")
         best_res = None
         for j in range(n_ini):
@@ -559,6 +560,9 @@ class ShapeOptimizer:
         print("Random initialization done, best cost: ", best_cost)
         print("Starting multiscale optimization")
         fit_params["schedule"]["max_freqs"], fit_params["schedule"]["min_freqs"] = max_freqs_copy, min_freqs_copy
+        fit_params["step"] = old_steps[0]
+        fit_params["rotation_step"]= old_steps[1]
+        fit_params["translation_step"] = old_steps[2]
         fit_params["niter"] = n_steps_final
         if best_res is not None:
             self.update_sim(best_res, update_adjoint=False, update_state=False)

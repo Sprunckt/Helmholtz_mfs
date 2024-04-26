@@ -497,7 +497,7 @@ def random_poly(bounds, nvertices, in_constraints=None):
     xmin, xmax = bounds[0]
     ymin, ymax = bounds[1]
     while True:
-        vertices = np.random.rand([nvertices, 2])*np.array([xmax - xmin, ymax - ymin]) + np.array([xmin, ymin])
+        vertices = np.random.rand(nvertices, 2)*np.array([xmax - xmin, ymax - ymin]) + np.array([xmin, ymin])
         vertices = vertices[ConvexHull(vertices).vertices]
         if len(vertices) == nvertices:
             poly = Polygon(vertices)

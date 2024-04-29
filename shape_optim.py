@@ -98,11 +98,12 @@ class ShapeOptimizer:
             if not success:
                 print("Polygon update failed, skipping")
                 continue
+
             new_cost = self.cost_fun()
             if verbose:
                 print("cost: ", new_cost)
 
-            if new_cost < start_cost:
+            if new_cost < best_cost:
                 best_cost = new_cost
                 if best_cost < start_cost:
                     if i == 0:
@@ -167,7 +168,7 @@ class ShapeOptimizer:
     def fit(self, niter=100, jtol=1e-5, step=10, neval_search=3, step_decrease=0.85,
             decrease_period=10, increase_period=10, step_increase=1.2, patience=5, decrease_patience=0.01, freq_patience=20,
             convex_proj=False, rotation_step=50, translation_step=10,
-            schedule=None, save_path=None, save_freq=20, compute_full_cost=0):
+            schedule=None, save_path=None, save_freq=20, compute_full_cost=0, patience_stop=False):
         """Set alternate to inf to compute full grad at each iteration, 0 to always alternate the vertex number.
         schedule is a dictionary with keys: mic_batch_size, freq_batch_size, max_freqs, update_its. max_freqs and
         update_its are lists of the same length, indicating the maximum frequencies and the iteration at which to update
@@ -227,12 +228,12 @@ class ShapeOptimizer:
                                                               in_constraints=in_constraints, convex_proj=convex_proj)
             elif descent_type == 1:  # translation step
                 cost, grad, init_decreased = self.line_search(steps[descent_type], step_decrease, neval_search,
-                                                              update_fun=_step_update_translation,
+                                                              update_fun=_step_update_translation, verbose=self.verbose,
                                                               grad_fun=self.partial_derivative_translation,
                                                               in_constraints=in_constraints)
             elif descent_type == 2:  # rotation step
                 cost, grad, init_decreased = self.line_search(steps[descent_type], step_decrease, neval_search,
-                                                              update_fun=_step_update_rotation,
+                                                              update_fun=_step_update_rotation, verbose=self.verbose,
                                                               grad_fun=self.partial_derivative_rotation,
                                                               in_constraints=in_constraints)
             else:
@@ -278,9 +279,12 @@ class ShapeOptimizer:
             # updating descent type based on patience
             if patience_counter >= patience:  # meaning at least 'patience' iterations since last descent change
                 if np.abs((log["cost"][-1] - log["cost"][-patience]) / log["cost"][-patience]) < decrease_patience:
-                    decrease_ind, increase_ind, patience_counter = 0, 0, 0
-                    descent_type = (descent_type + 1) % 3
-                    print("changing descent type to ", descent_type_str[descent_type])
+                    if patience_stop:  # stop optimization
+                        break
+                    else:  # continue, switching descent type
+                        decrease_ind, increase_ind, patience_counter = 0, 0, 0
+                        descent_type = (descent_type + 1) % 3
+                        print("changing descent type to ", descent_type_str[descent_type])
             else:
                 patience_counter += 1
             
@@ -319,7 +323,7 @@ class ShapeOptimizer:
         if save_path is not None:
             dict_to_json(log, save_path)
 
-        return self.sim_p.poly.vertices, log
+        return self.sim_p.poly.vertices, log, cost
 
     def _update_state(self):
         self.sim_p.set_freq_ind_to_simulate(self._active_ind)
@@ -370,7 +374,7 @@ class ShapeOptimizer:
         if new_params is not None:
             success = self.sim_p.update_poly(new_params, parametrization=self.parametrization, convex_proj=convex_proj,
                                              bounds=bounds, check_in=check_in)
-            if (not allow_reduce) and (self.sim_p.poly.nedges != self.nedges): 
+            if (not allow_reduce) and (self.sim_p.poly.nedges < self.nedges): 
                 success = False
             if success:
                 self.sim_q.update_poly(new_params, parametrization=self.parametrization, convex_proj=convex_proj)
@@ -526,9 +530,10 @@ class ShapeOptimizer:
         return res
 
     def random_multiscale_fit(self, bounds, n_steps_final, n_steps_ini, max_freq_ini, min_freq_ini,
-                              fit_params, n_ini=10, save_path=None):
+                              fit_params, n_ini=10, n_edges=None, save_path=None):
         """Optimize shape using randomized initialization and refining frequencies at each restart.
-        - bounds: list of 2 tuples (for x and y), lower and upper bounds for the random vertices.
+        - bounds: list of 2 tuples (for x and y), lower and upper bounds for the random vertices, or a float
+        (maximum norm of the vertices)
         - n_steps_final: number of steps for the final (refined) optimization
         - n_steps_ini: number of steps for the initial random optimization
         - max_freq_ini, min_freq_ini: initial frequency range
@@ -536,12 +541,15 @@ class ShapeOptimizer:
         - n_ini: number of random initializations
         - save_path: path to save the optimization results
         """
-
+        tstart = time.time()
+        if n_edges is None:
+            n_edges = self.sim_p.poly.nedges
         in_constraints = np.concatenate([self.mic_pos, self.source_pos], axis=0)
         max_freqs_copy = fit_params["schedule"]["max_freqs"].copy()
         min_freqs_copy = fit_params["schedule"]["min_freqs"].copy()
         fit_params["niter"] = n_steps_ini
         fit_params["schedule"]["max_freqs"], fit_params["schedule"]["min_freqs"] = [max_freq_ini], [min_freq_ini]
+        fit_params["patience_stop"] = True
         best_cost = np.inf
         old_steps = [fit_params["step"],fit_params["rotation_step"], fit_params["translation_step"]]
         print("Starting random initialization")
@@ -550,27 +558,31 @@ class ShapeOptimizer:
             if save_path is not None:  # contain base path
                 fit_params["save_path"] = save_path.split(".json")[0] + "_{}.json".format(j)
             print("Initialization number: ", j)
-            vertices = random_poly(bounds, self.sim_p.poly.nedges, in_constraints=in_constraints)
+            vertices = random_poly(bounds, n_edges, in_constraints=in_constraints).vertices
             self.update_sim(vertices, update_adjoint=False, update_state=False)
-            res, log = self.fit(**fit_params)
-            if res[-1] < best_cost:
-                best_cost = res[-1]
-                best_res = res
-
-        print("Random initialization done, best cost: ", best_cost)
+            res, _, cost = self.fit(**fit_params)
+            if cost < best_cost:
+                best_cost = cost
+                best_res = res.copy()
+        tend1 = time.time()
+        print("Random initialization done, best cost: {}, time: {}".format(best_cost, tend1 - tstart))
         print("Starting multiscale optimization")
+
+        fit_params["patience_stop"] = False
         fit_params["schedule"]["max_freqs"], fit_params["schedule"]["min_freqs"] = max_freqs_copy, min_freqs_copy
         fit_params["step"] = old_steps[0]
         fit_params["rotation_step"]= old_steps[1]
         fit_params["translation_step"] = old_steps[2]
         fit_params["niter"] = n_steps_final
+        fit_params["save_path"] = save_path
         if best_res is not None:
             self.update_sim(best_res, update_adjoint=False, update_state=False)
         else:
             print("No valid initialization found, stopping")
             return None
-
-        return self.fit(**fit_params)  # return the final optimization result
+        res = self.fit(**fit_params)
+        print("total time: ", time.time() - tstart)
+        return res  # return the final optimization result
 
 
 def _step_update_params(params, step, grad):

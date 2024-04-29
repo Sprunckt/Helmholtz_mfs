@@ -494,12 +494,24 @@ def rotate(points, angle, center):
 
 
 def random_poly(bounds, nvertices, in_constraints=None):
-    xmin, xmax = bounds[0]
-    ymin, ymax = bounds[1]
+    if type(bounds) == float:
+        gen_fun = lambda: random_point_disk(bounds, nvertices)
+    else:
+        xmin, xmax = bounds[0]
+        ymin, ymax = bounds[1]
+        gen_fun = lambda: np.random.rand(nvertices, 2)*np.array([xmax - xmin, ymax - ymin]) + np.array([xmin, ymin])  
+
     while True:
-        vertices = np.random.rand(nvertices, 2)*np.array([xmax - xmin, ymax - ymin]) + np.array([xmin, ymin])
+        vertices = gen_fun()
         vertices = vertices[ConvexHull(vertices).vertices]
         if len(vertices) == nvertices:
             poly = Polygon(vertices)
             if in_constraints is not None and np.all(poly.is_in(in_constraints)):
                 return poly
+
+
+def random_point_disk(r, n):
+    theta = np.random.uniform(0, 2*np.pi, n)
+    r = np.sqrt(np.random.uniform(0, r**2, n))
+    return np.stack([r*np.cos(theta), r*np.sin(theta)], axis=1)
+

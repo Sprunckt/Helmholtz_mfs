@@ -167,7 +167,7 @@ class ShapeOptimizer:
 
     def fit(self, niter=100, jtol=1e-5, step=10, neval_search=3, step_decrease=0.85,
             decrease_period=10, increase_period=10, step_increase=1.2, patience=5, decrease_patience=0.01, freq_patience=20,
-            convex_proj=False, rotation_step=50, translation_step=10,
+            convex_proj=False, rotation_step=50, translation_step=10, alternate_descent=True,
             schedule=None, save_path=None, save_freq=20, compute_full_cost=0, patience_stop=False):
         """Set alternate to inf to compute full grad at each iteration, 0 to always alternate the vertex number.
         schedule is a dictionary with keys: mic_batch_size, freq_batch_size, max_freqs, update_its. max_freqs and
@@ -281,7 +281,7 @@ class ShapeOptimizer:
                 if np.abs((log["cost"][-1] - log["cost"][-patience]) / log["cost"][-patience]) < decrease_patience:
                     if patience_stop:  # stop optimization
                         break
-                    else:  # continue, switching descent type
+                    elif alternate_descent:  # continue, switching descent type
                         decrease_ind, increase_ind, patience_counter = 0, 0, 0
                         descent_type = (descent_type + 1) % 3
                         print("changing descent type to ", descent_type_str[descent_type])

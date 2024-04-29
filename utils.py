@@ -506,7 +506,10 @@ def random_poly(bounds, nvertices, in_constraints=None):
         vertices = vertices[ConvexHull(vertices).vertices]
         if len(vertices) == nvertices:
             poly = Polygon(vertices)
-            if in_constraints is not None and np.all(poly.is_in(in_constraints)):
+            if in_constraints is not None:
+                if np.all(poly.is_in(in_constraints)):
+                    return poly
+            else:
                 return poly
 
 

@@ -2,36 +2,20 @@ from simulation import Simulation
 import numpy as np
 import time
 import json
-from utils import rotate, mod2pi, random_poly
-
-def array_to_list(arr):
-    """Converts arr to a list if arr is an ndarray, leave as it is otherwise."""
-    if type(arr) == np.ndarray:
-        return arr.tolist()
-    else:
-        return arr
-
-
-def dict_to_json(dico, path):
-    dd = dico.copy()
-    for key in dd:
-        dd[key] = array_to_list(dd[key])
-    fd = open(path, 'w')
-    json.dump(dd, fd)
-    fd.close()
+from utils import rotate, mod2pi, random_poly, array_to_list, dict_to_json
 
 
 class ShapeOptimizer:
     def __init__(self, init_vertices: np.ndarray, fs: float, nfreq: int, source_pos: np.ndarray, mic_pos: np.ndarray,
                  measurements: np.ndarray, dx: float, nprocess=1, n_int=1000, parametrization="half-planes",
-                 sim_kwargs=None, src_ampl=None, verbose=False):
+                 sim_kwargs=None, src_ampl=None, verbose=False, min_length=0.25, min_edges=None):
         self.parametrization = parametrization
 
         if parametrization == "half-planes":
             origin = np.reshape(source_pos.copy(), -1)
         else:
             origin = None
-
+        self.min_length = min_length
         if sim_kwargs is None:
             sim_kwargs = {"boundsep": 0.05}
         self.sim_p = Simulation(vertices=init_vertices, fs=fs, nfreq=nfreq, dx=dx, origin=origin,
@@ -68,18 +52,19 @@ class ShapeOptimizer:
         self._nactive_mic = self.nmics
         
         self.nfreqs = nfreq
-        self.nedges = self.sim_p.poly.nedges
+        if min_edges is None:
+            self.nedges = self.sim_p.poly.nedges
+        else:
+            self.nedges = min_edges
         self._generator = np.random.default_rng()
 
     def get_params(self):
         return self.sim_p.poly.get_params(self.parametrization).copy()
 
 
-    def line_search(self, step, step_decrease, neval_search, update_fun, grad_fun, bounds=None, convex_proj=False,
+    def line_search(self, step, step_decrease, neval_search, update_fun, grad_fun, bounds=(-15., 15.), convex_proj=False,
                     in_constraints=None, verbose=False):
-        if bounds is None:
-            bounds = (-10., 10.)
-
+        tstart = time.time()
         curr_params = self.get_params()
         best_cost = np.inf
         start_cost = self.cost_fun()
@@ -92,7 +77,7 @@ class ShapeOptimizer:
             if verbose:
                 print("step: ", curr_step)
             success = self.update_sim(new_params, update_state=True, update_adjoint=False, convex_proj=convex_proj,
-                                      bounds=bounds, check_in=in_constraints, allow_reduce=False)
+                                      bounds=bounds, check_in=in_constraints, allow_reduce=self.nedges)
             curr_step = curr_step * step_decrease
 
             if not success:
@@ -116,13 +101,17 @@ class ShapeOptimizer:
             print("No valid step found to update polygon, failure")
         else:
             self._update_adjoint()
-
+            
+        if verbose:
+            print("line search time: ", time.time()-tstart)
+        
         return best_cost, grad, init_decrease
 
     def _update_quadrature_points(self):
         self.quad_points, _, self.quad_ids, self.quad_nodes = self.sim_p.poly.sample(self.n_int, return_nodes=True,
                                                                                      min_dist=0.)
         interv = np.where(np.diff(self.quad_ids) != 0)[0]
+        self.quad_intervals = np.zeros([self.sim_p.poly.nedges, 2], dtype=int)
         self.quad_intervals[0], self.quad_intervals[-1] = [0, interv[0]], [interv[-1] + 1, len(self.quad_ids) - 1]
         self.quad_intervals[1:-1] = np.stack([interv[:-1] + 1, interv[1:]], axis=1)
 
@@ -158,22 +147,27 @@ class ShapeOptimizer:
         
     def _batch(self, schedule):
         if schedule["freq_batch_size"] > 0:
-            self._active_ind = self._generator.choice(self._possible_ind, schedule["freq_batch_size"], replace=False)
-            self._nactive = schedule["freq_batch_size"]
+            freq_batch_size = np.minimum(schedule["freq_batch_size"], self._nactive)
+            self._active_ind = self._generator.choice(self._possible_ind, freq_batch_size, replace=False)
+            self._nactive = freq_batch_size
         if schedule["mic_batch_size"] > 0:
             self._active_mic_ind = self._generator.choice(np.arange(self.nmics), schedule["mic_batch_size"],
                                                           replace=False)
             self._nactive_mic = schedule["mic_batch_size"]
 
-    def fit(self, niter=100, jtol=1e-5, step=10, neval_search=3, step_decrease=0.85,
+    def fit(self, niter=100, jtol=1e-5, step=10, neval_search=3, step_decrease=0.85, min_iter=50,
             decrease_period=10, increase_period=10, step_increase=1.2, patience=5, decrease_patience=0.01, freq_patience=20,
             convex_proj=False, rotation_step=50, translation_step=10, alternate_descent=True,
-            schedule=None, save_path=None, save_freq=20, compute_full_cost=0, patience_stop=False):
+            schedule=None, save_path=None, save_freq=20, compute_full_cost=0, patience_stop=False, old_log=None):
         """Set alternate to inf to compute full grad at each iteration, 0 to always alternate the vertex number.
         schedule is a dictionary with keys: mic_batch_size, freq_batch_size, max_freqs, update_its. max_freqs and
         update_its are lists of the same length, indicating the maximum frequencies and the iteration at which to update
         the maximume frequency to the next value."""
-        log = dict(grad=[], vert=[self.sim_p.poly.vertices.tolist()], signals=[])
+
+        if old_log is None:
+            log = dict(grad=[], vert=[self.sim_p.poly.vertices.tolist()], signals=[])
+        else:
+            log = old_log
 
         if self.parametrization == "half-planes":  # the origin is set at the source position
             in_constraints = self.mic_pos
@@ -183,7 +177,8 @@ class ShapeOptimizer:
         if compute_full_cost > 0:
             self._reset_active_indices()
             self.update_sim(update_state=True, update_adjoint=False)
-            log["full_cost"] = [self.cost_fun()]
+            if old_log is None:
+                log["full_cost"] = [self.cost_fun()]
 
         if schedule is None:  # default schedule : no batch, start at maximum frequency
             schedule = dict(mic_batch_size=0, freq_batch_size=0, max_freqs=[self.max_freq], 
@@ -198,19 +193,23 @@ class ShapeOptimizer:
         assert len(schedule["max_freqs"]) == len(schedule["min_freqs"]), \
             "max_freqs and min_freqs should have same length"
 
-        act_ind, act_ind_mic = self._get_active_indices()
-        self._set_active_indices(act_ind, np.arange(self.nmics))
-        log["cost"] = [self.cost_fun()]
-        signals = self.get_signals()
-        log["signals_re"], log["signals_im"] = [signals.real.tolist()], [signals.imag.tolist()]
-        self._set_active_indices(act_ind, act_ind_mic)
+        if old_log is None:
+            act_ind, act_ind_mic = self._get_active_indices()
+            self._set_active_indices(act_ind, np.arange(self.nmics))
+            log["cost"] = [self.cost_fun()]
+            signals = self.get_signals()
+            log["signals_re"], log["signals_im"] = [signals.real.tolist()], [signals.imag.tolist()]
+            self._set_active_indices(act_ind, act_ind_mic)
 
-        log["max_freq"], log["min_freq"] = [self.max_freq], [self.min_freq]
-        log["ind_min"], log["ind_max"] = [int(np.min(self._active_ind))], [int(np.max(self._active_ind))]
-        log["descent_type"] = [0]
-        log["frequency_change"] = []
+            log["max_freq"], log["min_freq"] = [self.max_freq], [self.min_freq]
+            log["ind_min"], log["ind_max"] = [int(np.min(self._active_ind))], [int(np.max(self._active_ind))]
+            log["descent_type"] = [0]
+            log["frequency_change"] = []
+            print("initial cost:", log["cost"][0])
+        else:
+            print("initial cost:", log["cost"][-1])
+
         it, cost, gradcost, decrease_ind, increase_ind = 0, np.inf, np.inf, 0, 0
-        print("initial cost:", log["cost"][0])
         descent_type = 0  # 0: shape step, 1: translation step, 2: rotation step
         steps = [step, translation_step, rotation_step]
         descent_type_str = ["shape", "translation", "rotation"]
@@ -279,7 +278,7 @@ class ShapeOptimizer:
             # updating descent type based on patience
             if patience_counter >= patience:  # meaning at least 'patience' iterations since last descent change
                 if np.abs((log["cost"][-1] - log["cost"][-patience]) / log["cost"][-patience]) < decrease_patience:
-                    if patience_stop:  # stop optimization
+                    if patience_stop and it >= min_iter:  # stop optimization
                         break
                     elif alternate_descent:  # continue, switching descent type
                         decrease_ind, increase_ind, patience_counter = 0, 0, 0
@@ -297,6 +296,9 @@ class ShapeOptimizer:
                     if updated:
                         self.update_sim(update_state=True, update_adjoint=True)
                         log["frequency_change"].append(it)
+                    else:  # no more frequencies to add, stopping
+                        if it >= min_iter:
+                            break
             else:
                 freq_patience_counter += 1
 
@@ -328,11 +330,11 @@ class ShapeOptimizer:
     def _update_state(self):
         self.sim_p.set_freq_ind_to_simulate(self._active_ind)
         self.sim_p.simulate(self.nprocess, verbose=False)
-
         mic_val = self.sim_p.compute(self.mic_pos[self._active_mic_ind], self.nprocess, freq_ind=self._active_ind)
         self.diffs = mic_val - self.observations[self._active_mic_ind[:, np.newaxis], self._active_ind[np.newaxis, :]]
 
         self.p_values = self.sim_p.compute(self.quad_points, self.nprocess, freq_ind=self._active_ind, use_src=True)
+
         self.cornerval_p = self.sim_p.compute_corner_values(use_src=True, freq_ind=self._active_ind)
 
         nvert = len(self.sim_p.poly.vertices)
@@ -370,13 +372,17 @@ class ShapeOptimizer:
                                                                               axis=-1))  # dn p * q.conj
 
     def update_sim(self, new_params=None, update_state=True, update_adjoint=True,
-                   bounds=None, check_in=None, convex_proj=False, allow_reduce=False):
+                   bounds=None, check_in=None, convex_proj=False, allow_reduce=3):
         if new_params is not None:
             success = self.sim_p.update_poly(new_params, parametrization=self.parametrization, convex_proj=convex_proj,
-                                             bounds=bounds, check_in=check_in)
-            if (not allow_reduce) and (self.sim_p.poly.nedges < self.nedges): 
+                                             bounds=bounds, check_in=check_in, min_length=self.min_length)
+            
+            if self.sim_p.poly.nedges < allow_reduce: 
                 success = False
             if success:
+                if self.sim_p.poly.nedges != len(self.sim_p.mfs.beta):   # todo: update in case of different betas
+                    self.sim_p.mfs.beta = np.array([self.sim_p.mfs.beta[0] for _ in range(self.sim_p.poly.nedges)])
+                    self.sim_q.mfs.beta = np.array([self.sim_q.mfs.beta[0] for _ in range(self.sim_p.poly.nedges)])
                 self.sim_q.update_poly(new_params, parametrization=self.parametrization, convex_proj=convex_proj)
                 self._update_quadrature_points()
 
@@ -529,8 +535,9 @@ class ShapeOptimizer:
             res[i] = self.cost_fun()
         return res
 
-    def random_multiscale_fit(self, bounds, n_steps_final, n_steps_ini, max_freq_ini, min_freq_ini,
-                              fit_params, n_ini=10, n_edges=None, save_path=None):
+    def random_multiscale_fit(self, bounds, n_steps_final, n_steps_ini, max_freq_ini, min_freq_ini, 
+                              fit_params, n_ini=10,  patience_final=None, n_edges=None, save_path=None,
+                              br_params=None):
         """Optimize shape using randomized initialization and refining frequencies at each restart.
         - bounds: list of 2 tuples (for x and y), lower and upper bounds for the random vertices, or a float
         (maximum norm of the vertices)
@@ -541,6 +548,10 @@ class ShapeOptimizer:
         - n_ini: number of random initializations
         - save_path: path to save the optimization results
         """
+        if br_params is None:
+            n_keep, n_iter = [], []
+        else:
+            n_keep, n_iter = br_params[0], br_params[1]
         tstart = time.time()
         if n_edges is None:
             n_edges = self.sim_p.poly.nedges
@@ -553,37 +564,75 @@ class ShapeOptimizer:
         best_cost = np.inf
         old_steps = [fit_params["step"],fit_params["rotation_step"], fit_params["translation_step"]]
         print("Starting random initialization")
-        best_res = None
-        for j in range(n_ini):
+        parametrization = self.parametrization
+        
+        costs, params, logs = np.zeros(n_ini), [], []
+        for curr_ini in range(n_ini):
             if save_path is not None:  # contain base path
-                fit_params["save_path"] = save_path.split(".json")[0] + "_{}.json".format(j)
-            print("Initialization number: ", j)
-            vertices = random_poly(bounds, n_edges, in_constraints=in_constraints).vertices
+                fit_params["save_path"] = save_path.split(".json")[0] + "_{}.json".format(curr_ini)
+            print("Initialization number: ", curr_ini)
+            vertices = random_poly(bounds, n_edges, in_constraints=in_constraints, min_length=0.5).vertices
+            self.parametrization = "vertices"
             self.update_sim(vertices, update_adjoint=False, update_state=False)
-            res, _, cost = self.fit(**fit_params)
-            if cost < best_cost:
-                best_cost = cost
-                best_res = res.copy()
+            self.parametrization = parametrization 
+            res, log, cost = self.fit(**fit_params)
+            params.append(self.get_params())
+            logs.append(log)
+            costs[curr_ini] = cost
+
+        ini_num = np.arange(n_ini)
+        curr_ini = 0
+        for i in range(len(n_keep)):
+            best_ind = np.argsort(costs)[:n_keep[i]]
+            ini_num = ini_num[best_ind]
+            print("best ind: {}\n best costs: {}".format(ini_num, costs[best_ind]))
+            new_params, costs, new_logs = [], np.zeros(n_keep[i]), []
+            fit_params["niter"] = n_iter[i]
+            for j in range(n_keep[i]):
+                print("Initialization number: ", ini_num[j])
+                fit_params["old_log"] = logs[best_ind[j]]
+                if save_path is not None:  # contain base path
+                    fit_params["save_path"] = save_path.split(".json")[0] + "_{}.json".format(ini_num[j])
+                self.update_sim(params[best_ind[j]], update_adjoint=False, update_state=False)
+                res, log, cost = self.fit(**fit_params)
+                new_logs.append(log)
+                costs[j] = cost
+                new_params.append(self.get_params())
+            params = new_params
+            logs = new_logs
+        best_ind = np.argmin(costs)
+        best_cost = costs[best_ind]
+        self.update_sim(params[best_ind], update_adjoint=False, update_state=False)
+
         tend1 = time.time()
         print("Random initialization done, best cost: {}, time: {}".format(best_cost, tend1 - tstart))
         print("Starting multiscale optimization")
-
-        fit_params["patience_stop"] = False
+        fit_params["old_log"] = None
+        # fit_params["patience_stop"] = False
         fit_params["schedule"]["max_freqs"], fit_params["schedule"]["min_freqs"] = max_freqs_copy, min_freqs_copy
         fit_params["step"] = old_steps[0]
         fit_params["rotation_step"]= old_steps[1]
         fit_params["translation_step"] = old_steps[2]
+        fit_params["patience_stop"] = False
+
         fit_params["niter"] = n_steps_final
         fit_params["save_path"] = save_path
-        if best_res is not None:
-            self.update_sim(best_res, update_adjoint=False, update_state=False)
-        else:
-            print("No valid initialization found, stopping")
-            return None
-        res = self.fit(**fit_params)
-        print("total time: ", time.time() - tstart)
-        return res  # return the final optimization result
+        if patience_final is not None:
+            fit_params["patience"] = patience_final
 
+        res, log, _ = self.fit(**fit_params)
+        print("total time: {}, final cost: {}".format(time.time() - tstart, log["cost"][-1]))
+        return res, log, log["cost"][-1]  # return the final optimization result
+    
+    def cost_fun_embed(self, params):
+        success = self.update_sim(np.reshape(params, [-1, 2]), update_state=False, update_adjoint=False, 
+                                  convex_proj=True, check_in=np.concatenate([self.source_pos, self.mic_pos]))
+        if success:
+            self._update_state()
+            res = self.cost_fun()
+        else:
+            res = 1e16 
+        return res
 
 def _step_update_params(params, step, grad):
     return params - step * grad

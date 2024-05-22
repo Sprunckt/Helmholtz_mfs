@@ -6,6 +6,7 @@ from shapely.geometry import Point as ShapelyPoint
 import pygmsh
 from scipy.integrate import simps
 from scipy.spatial import ConvexHull
+import json 
 
 c = 343
 
@@ -204,7 +205,7 @@ class Polygon:
         # compute polar angles of each edge with respect to the x-axis assuming origin is a vertex, in [-2, -2+2pi]
         self.polar_angles = mod2pi(np.arctan2(self.edges[:, 1], self.edges[:, 0]))
 
-    def update_param(self, new_projs, new_origin=None, bounds=None, check_in=None):
+    def update_param(self, new_projs, new_origin=None, bounds=None, check_in=None, min_length=None):
         if bounds is not None:
             if not np.all((bounds[0] < new_projs) &  (new_projs < bounds[1])):
                 return False 
@@ -234,7 +235,7 @@ class Polygon:
             print("Warning: some half-planes do not intersect, {} < {} edges found.".format(len(self.vertices),
                                                                                             self.nedges))
 
-        success = self.update_vertices(self.vertices, sort=True)  # to ensure indexation is correct
+        success = self.update_vertices(self.vertices, sort=True, min_length=min_length)  # to ensure indexation is correct
 
         if success and (check_in is not None):  # check if the points are in (after ensuring correct update of vertices) 
             if not np.all(self.is_in(check_in)):
@@ -247,7 +248,7 @@ class Polygon:
         angles = mod2pi(np.arctan2(self.vertices[:, 1] - self.origin[1], self.vertices[:, 0] - self.origin[0]))
         self.vertices = self.vertices[np.argsort(angles)]
 
-    def update_vertices(self, new_vert, sort=False, bounds=None, check_in=None, convex_proj=False, update_origin=False):
+    def update_vertices(self, new_vert, sort=False, bounds=None, check_in=None, convex_proj=False, update_origin=False, min_length=None):
         if bounds is not None:
             if not np.all((bounds[0] < new_vert) & (new_vert < bounds[1])):
                 return False 
@@ -255,6 +256,17 @@ class Polygon:
             new_vert = new_vert[ConvexHull(new_vert).vertices]
 
         self.vertices = new_vert.copy()
+
+        if min_length is not None: # merge vertices
+            while np.min(self.lengths) < min_length:
+                self._update_edges_and_angles()
+
+                indmin = np.argmin(self.lengths)
+                v1, v2 = self.vertices[indmin], self.vertices[(indmin + 1) % self.nedges]
+                vmid = (v1 + v2) / 2.
+                self.vertices[indmin] = vmid 
+                self.vertices = np.concatenate([self.vertices[:indmin+1], self.vertices[indmin+2:]], axis=0)
+        
         if sort:
             self.sort_vertices()
         if len(self.vertices) < 3:
@@ -265,6 +277,7 @@ class Polygon:
             self.origin = np.mean(self.vertices, axis=0)
 
         self._update_edges_and_angles()
+        
         self.normals = np.stack([self.edges[:, 1], -self.edges[:, 0]], axis=1)
         self.normals /= np.linalg.norm(self.normals, axis=1)[:, np.newaxis]
 
@@ -278,15 +291,24 @@ class Polygon:
         if check_in is not None:
             if not np.all(self.is_in(check_in)):
                 return False 
-
+       
         return True
 
-    def is_in(self, points, min_dist=0., tol=1e-6):
+    def is_in(self, points, min_dist=0., tol=1e-12):
         """Return an array of booleans indicating whether each point is inside the (convex) polygon."""
         # compute scalar products between each outward normal and the vector from the origin to the point
         return np.all(np.sum((np.reshape(points, (-1, 2)) - self.origin)[:, np.newaxis, :] *
                              self.normals[np.newaxis, :, :], axis=2)
                       <= self.distances[np.newaxis, :] - min_dist + tol, axis=1)
+
+    def random_point_in_poly(self, npoints, min_dist=0):
+        minx, miny, maxx, maxy = np.min(self.vertices[:,0]), np.min(self.vertices[:,1]), np.max(self.vertices[:,0]), np.max(self.vertices[:,1])
+        points = []
+        while len(points) < npoints:
+            pnt = np.array([[np.random.uniform(minx, maxx), np.random.uniform(miny, maxy)]])
+            if self.is_in(pnt, min_dist=min_dist)[0]:
+                points.append(pnt)
+        return np.concatenate(points, axis=0)
 
     def integrate_edge(self, vals, quad_nodes, edge_id):
         """Integrate the values vals over the edge with id edge_id, using the quadrature nodes quad_nodes and the
@@ -493,7 +515,7 @@ def rotate(points, angle, center):
     return (points - center) @ rot + center
 
 
-def random_poly(bounds, nvertices, in_constraints=None):
+def random_poly(bounds, nvertices, in_constraints=None, min_length=None):
     if type(bounds) == float:
         gen_fun = lambda: random_point_disk(bounds, nvertices)
     else:
@@ -506,6 +528,8 @@ def random_poly(bounds, nvertices, in_constraints=None):
         vertices = vertices[ConvexHull(vertices).vertices]
         if len(vertices) == nvertices:
             poly = Polygon(vertices)
+            if min_length is not None and np.min(poly.lengths) < min_length:
+                continue
             if in_constraints is not None:
                 if np.all(poly.is_in(in_constraints)):
                     return poly
@@ -513,8 +537,26 @@ def random_poly(bounds, nvertices, in_constraints=None):
                 return poly
 
 
-def random_point_disk(r, n):
+def random_point_disk(r, n, seed=None):
+    if seed is not None:
+        np.random.seed(seed)
     theta = np.random.uniform(0, 2*np.pi, n)
     r = np.sqrt(np.random.uniform(0, r**2, n))
     return np.stack([r*np.cos(theta), r*np.sin(theta)], axis=1)
 
+
+def array_to_list(arr):
+    """Converts arr to a list if arr is an ndarray, leave as it is otherwise."""
+    if type(arr) == np.ndarray:
+        return arr.tolist()
+    else:
+        return arr
+
+
+def dict_to_json(dico, path):
+    dd = dico.copy()
+    for key in dd:
+        dd[key] = array_to_list(dd[key])
+    fd = open(path, 'w')
+    json.dump(dd, fd)
+    fd.close()

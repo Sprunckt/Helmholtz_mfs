@@ -222,10 +222,10 @@ class Simulation:
         self.ampl = ampl
 
     def update_poly(self, new_vert, new_virt_vert=None, parametrization="vertices",
-                    bounds=None, check_in=None, convex_proj=False):
+                    bounds=None, check_in=None, convex_proj=False, min_length=None):
         if parametrization == "vertices":
             success = self.poly.update_vertices(new_vert, bounds=bounds, check_in=check_in, convex_proj=convex_proj,
-                                                update_origin=True)
+                                                update_origin=True, min_length=min_length)
             if new_virt_vert is not None:
                 self.poly_virt.update_vertices(new_virt_vert, bounds=bounds, update_origin=True)
             elif self.convexify:
@@ -237,7 +237,7 @@ class Simulation:
             else:
                 self.poly_virt = self.poly  
         elif parametrization == "half-planes":
-            success = self.poly.update_param(new_vert, bounds=bounds, check_in=check_in)
+            success = self.poly.update_param(new_vert, bounds=bounds, check_in=check_in, min_length=min_length)
             if new_virt_vert is not None:
                 success = self.poly_virt.update_param(new_virt_vert, bounds=bounds)
             elif self.convexify:
@@ -296,12 +296,12 @@ class Simulation:
                                add_fun=self.mfs.add_fun, src_ampl=self.src_ampl[:, ind])
         if verbose:
             print("computing frequency {}; {} sources".format(self.freqs[ind], mfs_tmp.nsrc))
-
+        res = mfs_tmp.evaluate_grad(compute_points, self.wave_numbers[ind], use_src=use_src)
         t2 = time.time()
         if verbose:
             print("time {} s".format(t2 - t1))
 
-        return mfs_tmp.evaluate_grad(compute_points, self.wave_numbers[ind], use_src=use_src)
+        return res
 
     def evaluate_error(self, freq_ind, nb_error_points=None):
         if nb_error_points is None:

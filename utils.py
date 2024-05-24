@@ -206,10 +206,6 @@ class Polygon:
         self.polar_angles = mod2pi(np.arctan2(self.edges[:, 1], self.edges[:, 0]))
 
     def update_param(self, new_projs, new_origin=None, bounds=None, check_in=None, min_length=None):
-        if bounds is not None:
-            if not np.all((bounds[0] < new_projs) &  (new_projs < bounds[1])):
-                return False 
-
         if new_origin is not None:  # otherwise assume old origin is still in the polygon
             self.origin = new_origin
 
@@ -235,7 +231,7 @@ class Polygon:
             print("Warning: some half-planes do not intersect, {} < {} edges found.".format(len(self.vertices),
                                                                                             self.nedges))
 
-        success = self.update_vertices(self.vertices, sort=True, min_length=min_length)  # to ensure indexation is correct
+        success = self.update_vertices(self.vertices, sort=True, min_length=min_length, bounds=bounds)  # to ensure indexation is correct
 
         if success and (check_in is not None):  # check if the points are in (after ensuring correct update of vertices) 
             if not np.all(self.is_in(check_in)):

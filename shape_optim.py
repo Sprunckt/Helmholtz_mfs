@@ -99,9 +99,7 @@ class ShapeOptimizer:
 
         if best_cost == np.inf:
             print("No valid step found to update polygon, failure")
-        else:
-            self._update_adjoint()
-            
+        
         if verbose:
             print("line search time: ", time.time()-tstart)
         
@@ -130,7 +128,7 @@ class ShapeOptimizer:
         self._active_ind = freq_ind.copy()
         self._active_mic_ind = mic_ind.copy()
 
-    def _update_active_indices(self, schedule):  # increase frequency range
+    def _increase_frequency_range(self, schedule):  # increase frequency range
         if schedule["update_ind"] < len(schedule["max_freqs"]):
             # update min, max frequencies
             self.max_freq = schedule["max_freqs"][schedule["update_ind"]]
@@ -140,25 +138,30 @@ class ShapeOptimizer:
             schedule["update_ind"] += 1
             self._possible_ind = self.sim_p.get_ind(self.min_freq, self.max_freq)
             self._active_ind = self._possible_ind.copy()
-            self._nactive = len(self._active_ind)
+            if schedule["freq_batch_size"] > 0:
+                self._nactive = np.minimum(schedule["freq_batch_size"], len(self._active_ind))
+            else: 
+                self._nactive = len(self._active_ind)
             return True
         else: 
             return False 
         
     def _batch(self, schedule):
+        update_state = False
         if schedule["freq_batch_size"] > 0:
-            freq_batch_size = np.minimum(schedule["freq_batch_size"], self._nactive)
-            self._active_ind = self._generator.choice(self._possible_ind, freq_batch_size, replace=False)
-            self._nactive = freq_batch_size
+            self._active_ind = self._generator.choice(self._possible_ind, self._nactive, replace=False)
+            update_state = True
         if schedule["mic_batch_size"] > 0:
             self._active_mic_ind = self._generator.choice(np.arange(self.nmics), schedule["mic_batch_size"],
                                                           replace=False)
             self._nactive_mic = schedule["mic_batch_size"]
 
+        return update_state
+
     def fit(self, niter=100, jtol=1e-5, step=10, neval_search=3, step_decrease=0.85, min_iter=50,
-            decrease_period=10, increase_period=10, step_increase=1.2, patience=5, decrease_patience=0.01, freq_patience=20,
-            convex_proj=False, rotation_step=50, translation_step=10, alternate_descent=True,
-            schedule=None, save_path=None, save_freq=20, compute_full_cost=0, patience_stop=False, old_log=None):
+            decrease_period=10, increase_period=10, step_increase=1.2, patience=5, decrease_patience=0.01, 
+            freq_patience=20, convex_proj=False, rotation_step=50, translation_step=10, alternate_descent=True,
+            schedule=None, save_path=None, save_freq=20, patience_stop=False, old_log=None):
         """Set alternate to inf to compute full grad at each iteration, 0 to always alternate the vertex number.
         schedule is a dictionary with keys: mic_batch_size, freq_batch_size, max_freqs, update_its. max_freqs and
         update_its are lists of the same length, indicating the maximum frequencies and the iteration at which to update
@@ -174,20 +177,17 @@ class ShapeOptimizer:
         else:  # in that case also check the source position
             in_constraints = np.concatenate([self.mic_pos, self.source_pos], axis=0)
 
-        if compute_full_cost > 0:
-            self._reset_active_indices()
-            self.update_sim(update_state=True, update_adjoint=False)
-            if old_log is None:
-                log["full_cost"] = [self.cost_fun()]
-
         if schedule is None:  # default schedule : no batch, start at maximum frequency
             schedule = dict(mic_batch_size=0, freq_batch_size=0, max_freqs=[self.max_freq], 
                             min_freqs=[self.min_freq], step_reset=None)
         
         print("Schedule: ", schedule)
         schedule["update_ind"] = 0
-        self._update_active_indices(schedule)
-        self.update_sim()
+        
+        self._increase_frequency_range(schedule)
+        self._batch(schedule)
+
+        self.update_sim(update_state=True, update_adjoint=True)
 
         log["schedule"] = schedule
         assert len(schedule["max_freqs"]) == len(schedule["min_freqs"]), \
@@ -212,6 +212,7 @@ class ShapeOptimizer:
         it, cost, gradcost, decrease_ind, increase_ind = 0, np.inf, np.inf, 0, 0
         descent_type = 0  # 0: shape step, 1: translation step, 2: rotation step
         steps = [step, translation_step, rotation_step]
+
         descent_type_str = ["shape", "translation", "rotation"]
         patience_counter, freq_patience_counter = 0, 0
         while it < niter and jtol < cost:
@@ -287,14 +288,15 @@ class ShapeOptimizer:
             else:
                 patience_counter += 1
             
+            update_state = False   # update state or not
             if freq_patience_counter >= freq_patience:
                 if np.abs((log["cost"][-1] - log["cost"][-freq_patience]) / log["cost"][-freq_patience]) < decrease_patience:
                     decrease_ind, increase_ind, patience_counter, freq_patience_counter = 0, 0, 0, 0
                     descent_type = 0  # go back to shape optimization
                     print("changing descent type to ", descent_type_str[descent_type])
-                    updated = self._update_active_indices(schedule)  # increase frequency range
+                    updated = self._increase_frequency_range(schedule)  # increase frequency range
                     if updated:
-                        self.update_sim(update_state=True, update_adjoint=True)
+                        update_state = True
                         log["frequency_change"].append(it)
                     else:  # no more frequencies to add, stopping
                         if it >= min_iter:
@@ -302,16 +304,13 @@ class ShapeOptimizer:
             else:
                 freq_patience_counter += 1
 
-            if (schedule["freq_batch_size"] > 0) or (schedule["freq_batch_size"] > 0):
-                self._batch(schedule)
-                self.update_sim(update_adjoint=True, update_state=True)
+            update_state = (self._batch(schedule) or update_state)
+        
+            self.update_sim(update_adjoint=True, update_state=update_state)
+            if schedule["mic_batch_size"] > 0:
+                self._update_obs()
+                
             t2 = time.time()
-
-            if (compute_full_cost > 0) and (((it + 1) % compute_full_cost) == 0):
-                self._reset_active_indices()
-                self.update_sim(update_state=True, update_adjoint=False)
-                log["full_cost"].append(self.cost_fun())
-                print("full cost: ", log["full_cost"])
 
             if self.verbose:
                 print("iteration {} done".format(it))
@@ -327,11 +326,15 @@ class ShapeOptimizer:
 
         return self.sim_p.poly.vertices, log, cost
 
+    def _update_obs(self):
+        mic_val = self.sim_p.compute(self.mic_pos[self._active_mic_ind], self.nprocess, freq_ind=self._active_ind)
+        self.diffs = mic_val - self.observations[self._active_mic_ind[:, np.newaxis], self._active_ind[np.newaxis, :]]
+
     def _update_state(self):
         self.sim_p.set_freq_ind_to_simulate(self._active_ind)
         self.sim_p.simulate(self.nprocess, verbose=False)
-        mic_val = self.sim_p.compute(self.mic_pos[self._active_mic_ind], self.nprocess, freq_ind=self._active_ind)
-        self.diffs = mic_val - self.observations[self._active_mic_ind[:, np.newaxis], self._active_ind[np.newaxis, :]]
+
+        self._update_obs()
 
         self.p_values = self.sim_p.compute(self.quad_points, self.nprocess, freq_ind=self._active_ind, use_src=True)
 
@@ -339,7 +342,6 @@ class ShapeOptimizer:
 
         nvert = len(self.sim_p.poly.vertices)
         self.p_grads = np.zeros((self.n_int, self._nactive, 2), dtype=complex)
-
         for i in range(nvert):  # compute gradients on each edge
             start_ind, end_ind = self.quad_intervals[i]
             self.p_grads[start_ind+1: end_ind] = self.sim_p.compute_grad(self.quad_points[start_ind+1: end_ind],
@@ -372,7 +374,7 @@ class ShapeOptimizer:
                                                                               axis=-1))  # dn p * q.conj
 
     def update_sim(self, new_params=None, update_state=True, update_adjoint=True,
-                   bounds=None, check_in=None, convex_proj=False, allow_reduce=3):
+                   bounds=(-15, 15), check_in=None, convex_proj=False, allow_reduce=3):
         if new_params is not None:
             success = self.sim_p.update_poly(new_params, parametrization=self.parametrization, convex_proj=convex_proj,
                                              bounds=bounds, check_in=check_in, min_length=self.min_length)
@@ -576,6 +578,11 @@ class ShapeOptimizer:
             self.update_sim(vertices, update_adjoint=False, update_state=False)
             self.parametrization = parametrization 
             res, log, cost = self.fit(**fit_params)
+            if (fit_params["schedule"]["freq_batch_size"] > 0) or (fit_params["schedule"]["mic_batch_size"] > 0):
+                self._reset_active_indices()
+                if (fit_params["schedule"]["freq_batch_size"] > 0) and (cost != np.inf):
+                    self._update_state()
+                cost = self.cost_fun()
             params.append(self.get_params())
             logs.append(log)
             costs[curr_ini] = cost
@@ -596,6 +603,11 @@ class ShapeOptimizer:
                 self.update_sim(params[best_ind[j]], update_adjoint=False, update_state=False)
                 res, log, cost = self.fit(**fit_params)
                 new_logs.append(log)
+                if (fit_params["schedule"]["freq_batch_size"] > 0) or (fit_params["schedule"]["mic_batch_size"] > 0):
+                    self._reset_active_indices()
+                    if (fit_params["schedule"]["freq_batch_size"] > 0) and (cost != np.inf):
+                        self._update_state()
+                    cost = self.cost_fun()
                 costs[j] = cost
                 new_params.append(self.get_params())
             params = new_params

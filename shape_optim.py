@@ -61,19 +61,64 @@ class ShapeOptimizer:
     def get_params(self):
         return self.sim_p.poly.get_params(self.parametrization).copy()
 
+    def _penalize_grad(self, in_constraints, eps):
+        """Return the gradient of cost function penalization and the indices of the affected microphones. Only
+        implemented for vertices parametrization !"""
+        edge_dist = self.sim_p.poly.get_edge_distances(in_constraints)  # shape (nconstr, nedges)
+        penal_ind = edge_dist >= self.sim_p.poly.distances[None, :]  # same shape
+        grad_penal = np.zeros([len(in_constraints), self.sim_p.poly.nedges, 2])
+        ind_out = np.where(penal_ind)
+        nout = len(ind_out[0])
+        if nout > 0:  # precompute some quantities
+            scal_prod = np.sum((self.sim_p.poly.projs[ind_out[1]] - self.sim_p.poly.origin[None, :]) *
+                               (in_constraints[ind_out[0]] - self.sim_p.poly.projs[ind_out[1]]), axis=1)
+            vec = self.sim_p.poly.origin[None, :] - 2*self.sim_p.poly.projs[ind_out[1]] + in_constraints[ind_out[0]]
 
-    def line_search(self, step, step_decrease, neval_search, update_fun, grad_fun, bounds=(-15., 15.), convex_proj=False,
-                    in_constraints=None, verbose=False):
+            t = (np.sum((self.sim_p.poly.origin - self.sim_p.poly.vertices) * self.sim_p.poly.edges,
+                        axis=1) / self.sim_p.poly.lengths**2)[:, None]
+            t2 = (-np.sum((self.sim_p.poly.origin - np.roll(self.sim_p.poly.vertices, -1, axis=0)) *
+                          self.sim_p.poly.edges, axis=1)/self.sim_p.poly.lengths**2)[:, None]
+            grad_t = (2*self.sim_p.poly.edges*t -
+                      (self.sim_p.poly.origin[None, :] - 2*self.sim_p.poly.vertices +
+                       np.roll(self.sim_p.poly.vertices, -1, axis=0))) / self.sim_p.poly.lengths[:, None]**2
+            grad_t2 = (-2*self.sim_p.poly.edges*t2 -
+                       (self.sim_p.poly.origin[None, :] - 2*np.roll(self.sim_p.poly.vertices, -1, axis=0) +
+                           self.sim_p.poly.vertices)) / self.sim_p.poly.lengths[:, None]**2
+            grad_penal[ind_out[0], ind_out[1]] = (((1-t)[ind_out[1]]*vec + grad_t[ind_out[1]] *
+                                                  np.sum(self.sim_p.poly.edges[ind_out[1]]*vec, axis=1)[:, None]) *
+                                                  scal_prod[:, None])
+            grad_penal[ind_out[0],
+            (ind_out[1] + 1) % self.sim_p.poly.nedges] += (((1-t2)[ind_out[1]]*vec - grad_t2[ind_out[1]] *
+                                                            np.sum(self.sim_p.poly.edges[ind_out[1]]*vec,
+                                                                   axis=1)[:, None]) * scal_prod[:, None])
+        grad_penal = np.sum(grad_penal, axis=0)
+
+        return grad_penal / eps, penal_ind
+
+    def _penalize(self, in_constraints, eps):
+        return np.sum(np.maximum(np.sum((in_constraints[:, None, :] - self.sim_p.poly.projs[None, :, :]) *
+                                        (self.sim_p.poly.projs[None, :, :] - self.sim_p.poly.origin[None, None, :]),
+                                        axis=2), 0)**2) / eps / 2.
+
+    def line_search(self, step, step_decrease, neval_search, update_fun, grad_fun, bounds=(-15., 15.),
+                    convex_proj=False, in_constraints=None, verbose=False, penalization=np.inf):
         tstart = time.time()
         curr_params = self.get_params()
         best_cost = np.inf
+
         start_cost = self.cost_fun()
         curr_step = step
         init_decrease = False  # True if costfun decreases at first step
         grad = grad_fun()
+        if penalization != np.inf:   # warning, penalization does not work with varying mic ind yet
+            grad_pen, out_ind = self._penalize_grad(in_constraints, penalization)
+            self._active_mic_ind = self._active_mic_ind[~out_ind]  # only keep ind of mics inside for costfun
+            in_constraints = None
+            grad += grad_pen
+
         print("starting cost: ", start_cost) 
         for i in range(neval_search):
-            new_params = update_fun(curr_params, curr_step, grad)  # apply update
+            new_params = update_fun(curr_params, curr_step, grad, in_constraints, penalization)  # apply update
             if verbose:
                 print("step: ", curr_step)
             success = self.update_sim(new_params, update_state=True, update_adjoint=False, convex_proj=convex_proj,
@@ -645,6 +690,7 @@ class ShapeOptimizer:
         else:
             res = 1e16 
         return res
+
 
 def _step_update_params(params, step, grad):
     return params - step * grad

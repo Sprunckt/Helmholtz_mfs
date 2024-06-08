@@ -290,11 +290,14 @@ class Polygon:
        
         return True
 
+    def get_edge_distances(self, points):
+        return np.sum((np.reshape(points, (-1, 2)) - self.origin)[:, np.newaxis, :] *
+                      self.normals[np.newaxis, :, :], axis=2)
+
     def is_in(self, points, min_dist=0., tol=1e-12):
         """Return an array of booleans indicating whether each point is inside the (convex) polygon."""
         # compute scalar products between each outward normal and the vector from the origin to the point
-        return np.all(np.sum((np.reshape(points, (-1, 2)) - self.origin)[:, np.newaxis, :] *
-                             self.normals[np.newaxis, :, :], axis=2)
+        return np.all(self.get_edge_distances(points)
                       <= self.distances[np.newaxis, :] - min_dist + tol, axis=1)
 
     def random_point_in_poly(self, npoints, min_dist=0):

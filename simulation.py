@@ -395,11 +395,8 @@ class Simulation:
         if freq_ind is None:  # compute all frequencies if not specified
             freq_ind = np.arange(self.nfreqs)
 
-        npoints = len(compute_points)
-        compute_points = np.reshape(compute_points, [npoints, -1])
-
         if nworkers == 1:
-            res_grad = np.zeros([npoints, len(freq_ind), 2], dtype=np.complex128)
+            res_grad = np.zeros([len(compute_points), len(freq_ind), 2], dtype=np.complex128)
 
             for k, i in enumerate(freq_ind):
                 res_grad[:, k] = self.compute_grad_freq(compute_points, i, use_src=use_src)

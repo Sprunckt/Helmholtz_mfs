@@ -66,10 +66,10 @@ class ShapeOptimizer:
         implemented for vertices parametrization !"""
         edge_dist = self.sim_p.poly.get_edge_distances(in_constraints)  # shape (nconstr, nedges)
         penal_ind = edge_dist >= self.sim_p.poly.distances[None, :]  # same shape
-        grad_penal = np.zeros([len(in_constraints), self.sim_p.poly.nedges, 2])
         ind_out = np.where(penal_ind)
         nout = len(ind_out[0])
-        if nout > 0:  # precompute some quantities
+        if nout > 0:
+            grad_penal = np.zeros([len(in_constraints), self.sim_p.poly.nedges, 2])
             scal_prod = np.sum((self.sim_p.poly.projs[ind_out[1]] - self.sim_p.poly.origin[None, :]) *
                                (in_constraints[ind_out[0]] - self.sim_p.poly.projs[ind_out[1]]), axis=1)
             vec = self.sim_p.poly.origin[None, :] - 2*self.sim_p.poly.projs[ind_out[1]] + in_constraints[ind_out[0]]
@@ -91,14 +91,16 @@ class ShapeOptimizer:
             (ind_out[1] + 1) % self.sim_p.poly.nedges] += (((1-t2)[ind_out[1]]*vec - grad_t2[ind_out[1]] *
                                                             np.sum(self.sim_p.poly.edges[ind_out[1]]*vec,
                                                                    axis=1)[:, None]) * scal_prod[:, None])
-        grad_penal = np.sum(grad_penal, axis=0)
+            grad_penal = np.sum(grad_penal, axis=0) / len(in_constraints)
+        else:
+            grad_penal = np.zeros([self.sim_p.poly.nedges, 2])
 
-        return grad_penal / eps, penal_ind
+        return grad_penal / eps
 
     def _penalize(self, in_constraints, eps):
         return np.sum(np.maximum(np.sum((in_constraints[:, None, :] - self.sim_p.poly.projs[None, :, :]) *
-                                        (self.sim_p.poly.projs[None, :, :] - self.sim_p.poly.origin[None, None, :]),
-                                        axis=2), 0)**2) / eps / 2.
+                      (self.sim_p.poly.projs[None, :, :] - self.sim_p.poly.origin[None, None, :]), axis=2), 
+                      0)**2) / eps / 2. / len(in_constraints)
 
     def line_search(self, step, step_decrease, neval_search, update_fun, grad_fun, bounds=(-15., 15.),
                     convex_proj=False, in_constraints=None, verbose=False, penalization=np.inf):
@@ -111,18 +113,19 @@ class ShapeOptimizer:
         init_decrease = False  # True if costfun decreases at first step
         grad = grad_fun()
         if penalization != np.inf:   # warning, penalization does not work with varying mic ind yet
-            grad_pen, out_ind = self._penalize_grad(in_constraints, penalization)
-            self._active_mic_ind = self._active_mic_ind[~out_ind]  # only keep ind of mics inside for costfun
-            in_constraints = None
+            grad_pen = self._penalize_grad(in_constraints, penalization)
+            hard_in_constraints = None
             grad += grad_pen
-
+            start_cost += self._penalize(in_constraints, penalization)
+        else:
+            hard_in_constraints = in_constraints
         print("starting cost: ", start_cost) 
         for i in range(neval_search):
-            new_params = update_fun(curr_params, curr_step, grad, in_constraints, penalization)  # apply update
+            new_params = update_fun(curr_params, curr_step, grad)  # apply update
             if verbose:
                 print("step: ", curr_step)
             success = self.update_sim(new_params, update_state=True, update_adjoint=False, convex_proj=convex_proj,
-                                      bounds=bounds, check_in=in_constraints, allow_reduce=self.nedges)
+                                      bounds=bounds, check_in=hard_in_constraints, allow_reduce=self.nedges)
             curr_step = curr_step * step_decrease
 
             if not success:
@@ -130,6 +133,8 @@ class ShapeOptimizer:
                 continue
 
             new_cost = self.cost_fun()
+            if penalization != np.inf:
+                new_cost += self._penalize(in_constraints, penalization)
             if verbose:
                 print("cost: ", new_cost)
 
@@ -206,7 +211,7 @@ class ShapeOptimizer:
     def fit(self, niter=100, jtol=1e-5, step=10, neval_search=3, step_decrease=0.85, min_iter=50,
             decrease_period=10, increase_period=10, step_increase=1.2, patience=5, decrease_patience=0.01, 
             freq_patience=20, convex_proj=False, rotation_step=50, translation_step=10, alternate_descent=True,
-            schedule=None, save_path=None, save_freq=20, patience_stop=False, old_log=None):
+            schedule=None, save_path=None, save_freq=20, patience_stop=False, old_log=None, penalization=np.inf):
         """Set alternate to inf to compute full grad at each iteration, 0 to always alternate the vertex number.
         schedule is a dictionary with keys: mic_batch_size, freq_batch_size, max_freqs, update_its. max_freqs and
         update_its are lists of the same length, indicating the maximum frequencies and the iteration at which to update
@@ -268,9 +273,9 @@ class ShapeOptimizer:
             # line search: reduce step size until cost function decreases
             if descent_type == 0:  # moving vertices / edges
                 cost, grad, init_decreased = self.line_search(steps[descent_type], step_decrease, neval_search,
-                                                              update_fun=_step_update_params,
+                                                              update_fun=_step_update_params, penalization=penalization,
                                                               grad_fun=self.get_gradient, verbose=self.verbose,
-                                                              in_constraints=in_constraints, convex_proj=convex_proj)
+                                                              in_constraints=in_constraints, convex_proj=convex_proj,)
             elif descent_type == 1:  # translation step
                 cost, grad, init_decreased = self.line_search(steps[descent_type], step_decrease, neval_search,
                                                               update_fun=_step_update_translation, verbose=self.verbose,

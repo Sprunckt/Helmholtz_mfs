@@ -564,7 +564,7 @@ class ShapeOptimizer:
         min_freqs_copy = fit_params["schedule"]["min_freqs"].copy()
         fit_params["niter"] = n_steps_ini
         fit_params["schedule"]["max_freqs"], fit_params["schedule"]["min_freqs"] = [max_freq_ini], [min_freq_ini]
-        old_steps = [fit_params["step"],fit_params["rotation_step"], fit_params["translation_step"]]
+        old_step = fit_params["step"]
         print("Starting random initialization")
         parametrization = self.parametrization
         
@@ -620,10 +620,7 @@ class ShapeOptimizer:
         print("Starting multiscale optimization")
         fit_params["old_log"] = None
         fit_params["schedule"]["max_freqs"], fit_params["schedule"]["min_freqs"] = max_freqs_copy, min_freqs_copy
-        fit_params["step"] = old_steps[0]
-        fit_params["rotation_step"]= old_steps[1]
-        fit_params["translation_step"] = old_steps[2]
-        fit_params["patience_stop"] = False
+        fit_params["step"] = old_step
 
         fit_params["niter"] = n_steps_final
         fit_params["save_path"] = save_path

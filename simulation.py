@@ -247,6 +247,8 @@ class Simulation:
                 else:
                     print("Convex projection for 3d polyhedras unsupported")
                     exit(-1)
+            else:
+                self.poly_virt = self.poly
         if success:
             self.mfs.poly = self.poly
             self._resample()

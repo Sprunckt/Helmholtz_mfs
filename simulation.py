@@ -342,17 +342,16 @@ class Simulation:
         if nworkers == 1:  # 1 frequency at a time
             for ind in ind_comp:
                 self.ampl[ind] = self.simulate_freq(ind, verbose=verbose)
+        elif nworkers > 1:
+            with mp.Pool(processes=nworkers) as pool:
+                partfunc = partial(self.simulate_freq, verbose=verbose)
+                ampl = pool.map(partfunc, ind_comp)
+                for i, ind in enumerate(ind_comp):
+                    self.ampl[ind] = ampl[i]
         else:
-            if nworkers < 0:
-                # use all available cores
-                pool = mp.Pool()
-            else:
-                pool = mp.Pool(processes=nworkers)
-            partfunc = partial(self.simulate_freq, verbose=verbose)
-            ampl = pool.map(partfunc, ind_comp)
-            pool.close()
-            for i, ind in enumerate(ind_comp):
-                self.ampl[ind] = ampl[i]
+            print("nworkers arg should be positive")
+            exit(1)
+            
         if verbose:
             print("total simulation time : {} s".format(time.time()-t1))
 
@@ -370,16 +369,14 @@ class Simulation:
             res = np.full([len(compute_points), len(freq_ind)], np.nan, dtype=np.complex128)
             for k, i in enumerate(freq_ind):
                 res[:, k] = self.compute_freq(compute_points, i, use_src=use_src)
+        elif nworkers > 1:
+            with mp.Pool(processes=nworkers) as pool:
+                # local function to compute the solution at a given frequency, take only ind as argument
+                fun = partial(self.compute_freq, compute_points, use_src=use_src)
+                res = np.stack(pool.map(fun, freq_ind), axis=1)
         else:
-            if nworkers < 0:
-                # use all available cores
-                pool = mp.Pool()
-            else:
-                pool = mp.Pool(processes=nworkers)
-            # local function to compute the solution at a given frequency, take only ind as argument
-            fun = partial(self.compute_freq, compute_points, use_src=use_src)
-            res = np.stack(pool.map(fun, freq_ind), axis=1)
-            pool.close()
+            print("nworkers arg should be positive")
+            exit(1)
 
         t2 = time.time()
         if verbose:
@@ -402,17 +399,14 @@ class Simulation:
 
             for k, i in enumerate(freq_ind):
                 res_grad[:, k] = self.compute_grad_freq(compute_points, i, use_src=use_src)
+        elif nworkers > 1:
+            with mp.Pool(processes=nworkers) as pool:
+                # local function to compute the solution at a given frequency, take only ind as argument
+                fun = partial(self.compute_grad_freq, compute_points, use_src=use_src)
+                res_grad = np.stack(pool.map(fun, freq_ind), axis=1)
         else:
-            if nworkers < 0:
-                # use all available cores
-                pool = mp.Pool()
-            else:
-                pool = mp.Pool(processes=nworkers)
-            # local function to compute the solution at a given frequency, take only ind as argument
-            fun = partial(self.compute_grad_freq, compute_points, use_src=use_src)
-
-            res_grad = np.stack(pool.map(fun, freq_ind), axis=1)
-            pool.close()
+            print("nworkers arg should be positive")
+            exit(1)
 
         t2 = time.time()
         if verbose:

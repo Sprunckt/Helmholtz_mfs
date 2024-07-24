@@ -477,7 +477,7 @@ class Cuboid(Polygon):
 
 def mod2pi(angle):
     """Return angle modulo 2*pi"""
-    return np.where(angle < 0, angle + 2*np.pi, angle)
+    return np.mod(angle, 2*np.pi)
 
 
 def angle_distance(angle1, angle2):

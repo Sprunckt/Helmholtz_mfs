@@ -14,7 +14,7 @@ def cost_check_stop(log, patience, tol):
 
 def vert_check_stop(log, patience, tol):
     if len(log["vert"]) > patience:
-        if np.sum(np.linalg.norm(np.array(log["vert"][-1]) - np.array(log["vert"][-patience]), axis=1)) < tol:
+        if np.max(np.linalg.norm(np.array(log["vert"][-1]) - np.array(log["vert"][-patience]), axis=1)) < tol:
             return True
     return False
 
@@ -61,6 +61,7 @@ class ShapeOptimizer:
         self._nactive = self.sim_p.nfreqs - 1
         self.max_freq = self.sim_p.freqs[-1]
         self.min_freq = 0.
+        self.min_iter_freq = 0
 
         self._active_mic_ind = np.arange(self.nmics)
         self._nactive_mic = self.nmics
@@ -120,7 +121,6 @@ class ShapeOptimizer:
                     convex_proj=False, in_constraints=None, verbose=False, penalization=np.inf):
         tstart = time.time()
         curr_params = self.get_params()
-        best_cost = np.inf
 
         start_cost = self.cost_fun()
         curr_step = step
@@ -143,6 +143,7 @@ class ShapeOptimizer:
             curr_step = curr_step * step_decrease
 
             if not success:
+                new_cost = np.inf
                 print("Polygon update failed, skipping")
                 continue
 
@@ -152,22 +153,20 @@ class ShapeOptimizer:
             if verbose:
                 print("cost: ", new_cost)
 
-            if new_cost < best_cost:
-                best_cost = new_cost
-                if best_cost < start_cost:
-                    if i == 0:
-                        init_decrease = True
-                    if verbose:
-                        print("costfunction decreased, early stopping")
-                    break
+            if new_cost < start_cost:
+                if i == 0:
+                    init_decrease = True
+                if verbose:
+                    print("costfunction decreased, early stopping")
+                break
 
-        if best_cost == np.inf:
+        if new_cost == np.inf:
             print("No valid step found to update polygon, failure")
         
         if verbose:
             print("line search time: ", time.time()-tstart)
         
-        return best_cost, grad, init_decrease
+        return new_cost, grad, init_decrease
 
     def _update_quadrature_points(self):
         self.quad_points, _, self.quad_ids, self.quad_nodes = self.sim_p.poly.sample(self.n_int, return_nodes=True,
@@ -197,6 +196,7 @@ class ShapeOptimizer:
             # update min, max frequencies
             self.max_freq = schedule["max_freqs"][schedule["update_ind"]]
             self.min_freq = schedule["min_freqs"][schedule["update_ind"]]
+            self.min_iter_freq = schedule["min_iter_freq"][schedule["update_ind"]]
             print("updating min, max frequencies to: ", (self.min_freq, self.max_freq))
                 
             schedule["update_ind"] += 1
@@ -221,15 +221,23 @@ class ShapeOptimizer:
             self._nactive_mic = schedule["mic_batch_size"]
 
         return update_state
-
-    def fit(self, niter=100, jtol=1e-5, step=10, neval_search=3, step_decrease=0.85, min_iter=500, min_iter_freq=100,
-            decrease_period=10, increase_period=10, step_increase=1.2, tol=0.01, stop_check=cost_check_stop,
+  
+    def fit(self, niter=100, jtol=1e-5, step=10, neval_search=3, step_decrease=0.85, min_iter=500,
+            decrease_period=10, increase_period=10, step_increase=1.2, tol=0.01, stop_check="cost",
             patience=20, convex_proj=False, schedule=None, save_path=None, save_freq=20,
             old_log=None, penalization=np.inf):
         """Set alternate to inf to compute full grad at each iteration, 0 to always alternate the vertex number.
         schedule is a dictionary with keys: mic_batch_size, freq_batch_size, max_freqs, update_its. max_freqs and
         update_its are lists of the same length, indicating the maximum frequencies and the iteration at which to update
         the maximume frequency to the next value."""
+
+        if stop_check == "cost":
+            stop_check = cost_check_stop
+        elif stop_check == "vertices":
+            stop_check = vert_check_stop
+        else:
+            print("stopping criterion '{}' unknown".format(stop_check))
+            exit(1)
 
         if old_log is None:
             log = dict(grad=[], vert=[self.sim_p.poly.vertices.tolist()], signals=[])
@@ -242,7 +250,7 @@ class ShapeOptimizer:
             in_constraints = np.concatenate([self.mic_pos, self.source_pos], axis=0)
 
         if schedule is None:  # default schedule : no batch, start at maximum frequency
-            schedule = dict(mic_batch_size=0, freq_batch_size=0, max_freqs=[self.max_freq], 
+            schedule = dict(mic_batch_size=0, freq_batch_size=0, max_freqs=[self.max_freq], min_iter_freq=[min_iter],
                             min_freqs=[self.min_freq], step_reset=None)
         
         print("Schedule: ", schedule)
@@ -269,13 +277,14 @@ class ShapeOptimizer:
             log["ind_min"], log["ind_max"] = [int(np.min(self._active_ind))], [int(np.max(self._active_ind))]
             log["descent_type"] = [0]
             log["frequency_change"] = []
+            log["initial_vert"] = self.sim_p.poly.vertices.copy()
             print("initial cost:", log["cost"][0])
         else:
             print("initial cost:", log["cost"][-1])
 
         it, cost, gradcost, decrease_ind, increase_ind = 0, np.inf, np.inf, 0, 0
         patience_counter, freq_it_counter = 0, 0
-        while it < niter and jtol < cost:
+        while it < niter:
             t1 = time.time()
             if self.verbose:
                 print("it: {}".format(it))
@@ -309,6 +318,7 @@ class ShapeOptimizer:
             self._set_active_indices(act_ind, np.arange(self.nmics))
             cost = self.cost_fun()
             log["cost"].append(cost)
+            
             signals = self.get_signals()
             log["signals_re"].append(signals.real.tolist()), log["signals_im"].append(signals.imag.tolist())
             self._set_active_indices(act_ind, act_ind_mic)  
@@ -318,24 +328,25 @@ class ShapeOptimizer:
             
             log["max_freq"].append(self.max_freq), log["min_freq"].append(self.min_freq)
 
-            update_state = False   # update state or not
-
+            update_state, stopping = False, False   # update state or not
+            freq_it_counter += 1
             if patience_counter >= patience:
-                if stop_check(log, patience, tol):
-                    decrease_ind, increase_ind, patience_counter, patience_counter = 0, 0, 0, 0
-
-                    if freq_it_counter >= min_iter_freq:
-                        updated = self._increase_frequency_range(schedule)  # increase frequency range
-                        if updated:
-                            freq_it_counter = 0
-                            update_state = True
-                            log["frequency_change"].append(it)
-                        else:  # no more frequencies to add, stopping
-                            if it >= min_iter:
-                                break
+                stopping = stop_check(log, patience, tol)
             else:
                 patience_counter += 1
 
+            # check for costfun value/if patience arg met and if min number of it for freq range was reached
+            stopping = (stopping or (cost < jtol)) and (freq_it_counter >= self.min_iter_freq)  
+            if stopping:  # check if frequency range can be extended
+                updated = self._increase_frequency_range(schedule)  # increase frequency range
+                if updated:  # increasing freq range, continuing
+                    decrease_ind, increase_ind, patience_counter, patience_counter, freq_it_counter = 0, 0, 0, 0, 0
+                    update_state = True
+                    log["frequency_change"].append(it)
+                else:
+                    if it >= min_iter:
+                        break
+                    
             update_state = (self._batch(schedule) or update_state)
         
             self.update_sim(update_adjoint=True, update_state=update_state)
@@ -345,7 +356,7 @@ class ShapeOptimizer:
             t2 = time.time()
 
             if self.verbose:
-                print("iteration {} done".format(it))
+                print("iteration {} done, freq it counter {}".format(it, freq_it_counter))
                 print("cost: ", cost, "grad_norm k-1: ", gradcost, "titer: ", t2-t1)
                 print("current polygon: \n", self.sim_p.poly.vertices)
             it += 1
@@ -564,6 +575,7 @@ class ShapeOptimizer:
         min_freqs_copy = fit_params["schedule"]["min_freqs"].copy()
         fit_params["niter"] = n_steps_ini
         fit_params["schedule"]["max_freqs"], fit_params["schedule"]["min_freqs"] = [max_freq_ini], [min_freq_ini]
+        fit_params["save_freq"] = np.maximum(np.max(br_params[0]), n_steps_ini) + 5
         old_step = fit_params["step"]
         print("Starting random initialization")
         parametrization = self.parametrization
@@ -621,6 +633,7 @@ class ShapeOptimizer:
         fit_params["old_log"] = None
         fit_params["schedule"]["max_freqs"], fit_params["schedule"]["min_freqs"] = max_freqs_copy, min_freqs_copy
         fit_params["step"] = old_step
+        fit_params["save_freq"] = 20
 
         fit_params["niter"] = n_steps_final
         fit_params["save_path"] = save_path

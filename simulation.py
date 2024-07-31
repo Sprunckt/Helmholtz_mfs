@@ -422,9 +422,9 @@ class Simulation:
         if low_cut is not None:
             b, a = signal.butter(4, low_cut, 'high', analog=True)
             _, filt = signal.freqs(b, a, worN=self.freqs)
-            freq_res *= filt[np.newaxis, :]
+            freq_res = freq_res*filt[np.newaxis, :]
         tval = np.linspace(0, self.nfreqs/self.fs, 2*self.nfreqs-2, endpoint=False)
-
+        
         return tval, np.fft.irfft(freq_res, 2*self.nfreqs-2, axis=1)
 
     def compute_corner_values(self, use_src=True, freq_ind=None):

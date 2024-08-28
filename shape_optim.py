@@ -61,7 +61,7 @@ class ShapeOptimizer:
         self._nactive = self.sim_p.nfreqs - 1
         self.max_freq = self.sim_p.freqs[-1]
         self.min_freq = 0.
-        self.min_iter_freq = 0
+        self.min_iter_freq, self.target_iter_freq = 0, 0
 
         self._active_mic_ind = np.arange(self.nmics)
         self._nactive_mic = self.nmics
@@ -149,7 +149,10 @@ class ShapeOptimizer:
 
             new_cost = self.cost_fun()
             if penalization != np.inf:
-                new_cost += self._penalize(in_constraints, penalization)
+                pen = self._penalize(in_constraints, penalization)
+                if verbose and pen > 0:
+                    print("applying penalization : " + str(pen))
+                new_cost += pen
             if verbose:
                 print("cost: ", new_cost)
 
@@ -197,6 +200,7 @@ class ShapeOptimizer:
             self.max_freq = schedule["max_freqs"][schedule["update_ind"]]
             self.min_freq = schedule["min_freqs"][schedule["update_ind"]]
             self.min_iter_freq = schedule["min_iter_freq"][schedule["update_ind"]]
+            self.target_iter_freq = schedule["target_iter_freq"][schedule["update_ind"]]
             print("updating min, max frequencies to: ", (self.min_freq, self.max_freq))
                 
             schedule["update_ind"] += 1
@@ -251,7 +255,7 @@ class ShapeOptimizer:
 
         if schedule is None:  # default schedule : no batch, start at maximum frequency
             schedule = dict(mic_batch_size=0, freq_batch_size=0, max_freqs=[self.max_freq], min_iter_freq=[min_iter],
-                            min_freqs=[self.min_freq], step_reset=None)
+                            target_iter_freq=[min_iter], min_freqs=[self.min_freq], step_reset=None)
         
         print("Schedule: ", schedule)
         schedule["update_ind"] = 0
@@ -259,6 +263,9 @@ class ShapeOptimizer:
         self._increase_frequency_range(schedule)
         self._batch(schedule)
 
+        if self.sim_p.poly.nedges != len(self.sim_p.mfs.beta) or  self.sim_q.poly.nedges != len(self.sim_q.mfs.beta):   # todo: remove
+                    self.sim_p.mfs.beta = np.array([self.sim_p.mfs.beta[0] for _ in range(self.sim_p.poly.nedges)])
+                    self.sim_q.mfs.beta = np.array([self.sim_q.mfs.beta[0] for _ in range(self.sim_p.poly.nedges)])
         self.update_sim(update_state=True, update_adjoint=True)
 
         log["schedule"] = schedule
@@ -336,7 +343,7 @@ class ShapeOptimizer:
                 patience_counter += 1
 
             # check for costfun value/if patience arg met and if min number of it for freq range was reached
-            stopping = (stopping or (cost < jtol)) and (freq_it_counter >= self.min_iter_freq)  
+            stopping = (stopping or (cost < jtol) or (freq_it_counter >= self.target_iter_freq)) and (freq_it_counter >= self.min_iter_freq)  
             if stopping:  # check if frequency range can be extended
                 updated = self._increase_frequency_range(schedule)  # increase frequency range
                 if updated:  # increasing freq range, continuing
@@ -425,7 +432,7 @@ class ShapeOptimizer:
             if self.sim_p.poly.nedges < allow_reduce: 
                 success = False
             if success:
-                if self.sim_p.poly.nedges != len(self.sim_p.mfs.beta):   # todo: update in case of different betas
+                if self.sim_p.poly.nedges != len(self.sim_p.mfs.beta) or  self.sim_q.poly.nedges != len(self.sim_q.mfs.beta):   # todo: update in case of different betas
                     self.sim_p.mfs.beta = np.array([self.sim_p.mfs.beta[0] for _ in range(self.sim_p.poly.nedges)])
                     self.sim_q.mfs.beta = np.array([self.sim_q.mfs.beta[0] for _ in range(self.sim_p.poly.nedges)])
                 self.sim_q.update_poly(new_params, parametrization=self.parametrization, convex_proj=convex_proj)
@@ -489,30 +496,31 @@ class ShapeOptimizer:
         res = res + (renormed_edge1 - renormed_edge2)*np.sum(np.real(self.corner_values[i, :]))
         return res / self._nactive_mic / self._nactive
 
-    def partial_derivative_proji(self, i):
-        V, V_corners = np.zeros((self.n_int, 2)), np.zeros((self.sim_p.poly.nedges, 2))
-        part_der = np.zeros(2)
-        quad_ids = np.where(self.quad_ids == i)[0]
-        nquad, indnext = len(quad_ids), (i+1) % self.sim_p.poly.nedges
-        px, origin = self.sim_p.poly.projs[i], self.sim_p.poly.origin
-        edgei, edgeip = self.sim_p.poly.edges[i-1], self.sim_p.poly.edges[indnext]
-        dot_prodi, dot_prodip = np.sum(edgei*(px - origin)), np.sum(edgeip*(px - origin))
-        vi, vip = self.sim_p.poly.vertices[i], self.sim_p.poly.vertices[indnext]
+        def partial_derivative_proji(self, i):
+            V, V_corners = np.zeros((self.n_int, 2)), np.zeros((self.sim_p.poly.nedges, 2))
+            part_der = np.zeros(2)
+            quad_ids = np.where(self.quad_ids == i)[0]
+            nquad, indnext = len(quad_ids), (i+1) % self.sim_p.poly.nedges
+            px, origin = self.sim_p.poly.projs[i], self.sim_p.poly.origin
+            edgei, edgeip = self.sim_p.poly.edges[i-1], self.sim_p.poly.edges[indnext]
+            edgei, edgeip = edgei / np.linalg.norm(edgei), edgeip / np.linalg.norm(edgeip)
+            dot_prodi, dot_prodip = np.sum(edgei*(px - origin)), np.sum(edgeip*(px - origin))
+            vi, vip = self.sim_p.poly.vertices[i], self.sim_p.poly.vertices[indnext]
+            dprod_num, dprod_nump = np.sum((px-origin)*(px-vi)), np.sum((px-origin)*(px-vip))
+            epsix = (2*px[0] - origin[0] - vi[0])/dot_prodi - edgei[0]*dprod_num/dot_prodi**2
+            epsiy = (2*px[1] - origin[1] - vi[1])/dot_prodi - edgei[1]*dprod_num/dot_prodi**2
+            epsixp = (2*px[0] - origin[0] - vip[0])/dot_prodip - edgeip[0]*dprod_nump/dot_prodip**2
+            epsiyp = (2*px[1] - origin[1] - vip[1])/dot_prodip - edgeip[1]*dprod_nump/dot_prodip**2
+            alpha = np.linspace(1, 0, nquad)  # linear mapping for edge parametrization
+            V[quad_ids] = alpha[:, np.newaxis]*epsix*edgei + (1-alpha)[:, np.newaxis]*epsixp*edgeip
+            V_corners[i], V_corners[indnext] = epsix * edgei, epsixp * edgeip
+            part_der[0] = self.evaluate_directional_derivative(V, V_corners)
 
-        epsix = (2*px[0] - origin[0] - vi[0])/dot_prodi - edgei[0]*(px[0]-origin[0])*(px[0]-vi[0])/dot_prodi**2
-        epsiy = (2*px[1] - origin[1] - vi[1])/dot_prodi - edgei[1]*(px[1]-origin[1])*(px[1]-vi[1])/dot_prodi**2
-        epsixp = (2*px[0] - origin[0] - vip[0])/dot_prodip - edgeip[0]*(px[0]-origin[0])*(px[0]-vip[0])/dot_prodip**2
-        epsiyp = (2*px[1] - origin[1] - vip[1])/dot_prodip - edgeip[1]*(px[1]-origin[1])*(px[1]-vip[1])/dot_prodip**2
-        alpha = np.linspace(1, 0, nquad)  # linear mapping for edge parametrization
-        V[quad_ids] = alpha[:, np.newaxis]*epsix*edgei + (1-alpha)[:, np.newaxis]*epsixp*edgeip
-        V_corners[i], V_corners[indnext] = epsix * edgei, epsixp * edgeip
-        part_der[0] = self.evaluate_directional_derivative(V, V_corners)
+            V[quad_ids] = alpha[:, np.newaxis]*epsiy*edgei + (1-alpha)[:, np.newaxis]*epsiyp*edgeip
+            V_corners[i], V_corners[indnext] = epsiy * edgei, epsiyp * edgeip
+            part_der[1] = self.evaluate_directional_derivative(V, V_corners)
 
-        V[quad_ids] = alpha[:, np.newaxis]*epsiy*edgei + (1-alpha)[:, np.newaxis]*epsiyp*edgeip
-        V_corners[i], V_corners[indnext] = epsiy * edgei, epsiyp * edgeip
-        part_der[1] = self.evaluate_directional_derivative(V, V_corners)
-
-        return part_der  # no normalization as it is done in evaluate_directional_derivative
+            return part_der  # no normalization as it is done in evaluate_directional_derivative
 
     def cost_fun(self):
         return 0.5*np.sum(np.real(self.diffs * self.diffs.conj())) / self._nactive_mic / self._nactive
@@ -575,29 +583,44 @@ class ShapeOptimizer:
         min_freqs_copy = fit_params["schedule"]["min_freqs"].copy()
         fit_params["niter"] = n_steps_ini
         fit_params["schedule"]["max_freqs"], fit_params["schedule"]["min_freqs"] = [max_freq_ini], [min_freq_ini]
-        fit_params["save_freq"] = np.maximum(np.max(br_params[0]), n_steps_ini) + 5
+        if br_params is None:
+            fit_params["save_freq"] = 5
+        else:
+            fit_params["save_freq"] = np.maximum(np.max(br_params[1]), n_steps_ini) + 5
+            
         old_step = fit_params["step"]
         print("Starting random initialization")
         parametrization = self.parametrization
         
         costs, params, logs = np.zeros(n_ini), [], []
-        for curr_ini in range(n_ini):
+        curr_ini = 0
+        while curr_ini < n_ini:
             if save_path is not None:  # contain base path
                 fit_params["save_path"] = save_path.split(".json")[0] + "_{}.json".format(curr_ini)
             print("Initialization number: ", curr_ini)
-            vertices = random_poly(bounds, n_edges, in_constraints=in_constraints, min_length=0.5).vertices
+            vertices = random_poly(bounds, n_edges, in_constraints=in_constraints, min_length=2., min_dist=0.5, 
+                                   min_angle=np.pi/4, max_angle=3*np.pi/4).vertices
             self.parametrization = "vertices"
-            self.update_sim(vertices, update_adjoint=False, update_state=False)
+            success = self.update_sim(vertices, update_adjoint=False, update_state=False)
+            print("polyshape" , vertices.shape)
+            if not success:
+                print("Initialization failed, trying again")
+                continue
             self.parametrization = parametrization 
             res, log, cost = self.fit(**fit_params)
+            if cost == np.inf:  # optimization failed, try another init
+                print("Initialization failed, trying again")
+                continue 
+
             if (fit_params["schedule"]["freq_batch_size"] > 0) or (fit_params["schedule"]["mic_batch_size"] > 0):
                 self._reset_active_indices()
-                if (fit_params["schedule"]["freq_batch_size"] > 0) and (cost != np.inf):
+                if (fit_params["schedule"]["freq_batch_size"] > 0):
                     self._update_state()
                 cost = self.cost_fun()
             params.append(self.get_params())
             logs.append(log)
             costs[curr_ini] = cost
+            curr_ini += 1
 
         ini_num = np.arange(n_ini)
         for i in range(len(n_keep)):
@@ -633,7 +656,7 @@ class ShapeOptimizer:
         fit_params["old_log"] = None
         fit_params["schedule"]["max_freqs"], fit_params["schedule"]["min_freqs"] = max_freqs_copy, min_freqs_copy
         fit_params["step"] = old_step
-        fit_params["save_freq"] = 20
+        fit_params["save_freq"] = 50
 
         fit_params["niter"] = n_steps_final
         fit_params["save_path"] = save_path

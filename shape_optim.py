@@ -496,31 +496,31 @@ class ShapeOptimizer:
         res = res + (renormed_edge1 - renormed_edge2)*np.sum(np.real(self.corner_values[i, :]))
         return res / self._nactive_mic / self._nactive
 
-        def partial_derivative_proji(self, i):
-            V, V_corners = np.zeros((self.n_int, 2)), np.zeros((self.sim_p.poly.nedges, 2))
-            part_der = np.zeros(2)
-            quad_ids = np.where(self.quad_ids == i)[0]
-            nquad, indnext = len(quad_ids), (i+1) % self.sim_p.poly.nedges
-            px, origin = self.sim_p.poly.projs[i], self.sim_p.poly.origin
-            edgei, edgeip = self.sim_p.poly.edges[i-1], self.sim_p.poly.edges[indnext]
-            edgei, edgeip = edgei / np.linalg.norm(edgei), edgeip / np.linalg.norm(edgeip)
-            dot_prodi, dot_prodip = np.sum(edgei*(px - origin)), np.sum(edgeip*(px - origin))
-            vi, vip = self.sim_p.poly.vertices[i], self.sim_p.poly.vertices[indnext]
-            dprod_num, dprod_nump = np.sum((px-origin)*(px-vi)), np.sum((px-origin)*(px-vip))
-            epsix = (2*px[0] - origin[0] - vi[0])/dot_prodi - edgei[0]*dprod_num/dot_prodi**2
-            epsiy = (2*px[1] - origin[1] - vi[1])/dot_prodi - edgei[1]*dprod_num/dot_prodi**2
-            epsixp = (2*px[0] - origin[0] - vip[0])/dot_prodip - edgeip[0]*dprod_nump/dot_prodip**2
-            epsiyp = (2*px[1] - origin[1] - vip[1])/dot_prodip - edgeip[1]*dprod_nump/dot_prodip**2
-            alpha = np.linspace(1, 0, nquad)  # linear mapping for edge parametrization
-            V[quad_ids] = alpha[:, np.newaxis]*epsix*edgei + (1-alpha)[:, np.newaxis]*epsixp*edgeip
-            V_corners[i], V_corners[indnext] = epsix * edgei, epsixp * edgeip
-            part_der[0] = self.evaluate_directional_derivative(V, V_corners)
+    def partial_derivative_proji(self, i):
+        V, V_corners = np.zeros((self.n_int, 2)), np.zeros((self.sim_p.poly.nedges, 2))
+        part_der = np.zeros(2)
+        quad_ids = np.where(self.quad_ids == i)[0]
+        nquad, indnext = len(quad_ids), (i+1) % self.sim_p.poly.nedges
+        px, origin = self.sim_p.poly.projs[i], self.sim_p.poly.origin
+        edgei, edgeip = self.sim_p.poly.edges[i-1], self.sim_p.poly.edges[indnext]
+        edgei, edgeip = edgei / np.linalg.norm(edgei), edgeip / np.linalg.norm(edgeip)
+        dot_prodi, dot_prodip = np.sum(edgei*(px - origin)), np.sum(edgeip*(px - origin))
+        vi, vip = self.sim_p.poly.vertices[i], self.sim_p.poly.vertices[indnext]
+        dprod_num, dprod_nump = np.sum((px-origin)*(px-vi)), np.sum((px-origin)*(px-vip))
+        epsix = (2*px[0] - origin[0] - vi[0])/dot_prodi - edgei[0]*dprod_num/dot_prodi**2
+        epsiy = (2*px[1] - origin[1] - vi[1])/dot_prodi - edgei[1]*dprod_num/dot_prodi**2
+        epsixp = (2*px[0] - origin[0] - vip[0])/dot_prodip - edgeip[0]*dprod_nump/dot_prodip**2
+        epsiyp = (2*px[1] - origin[1] - vip[1])/dot_prodip - edgeip[1]*dprod_nump/dot_prodip**2
+        alpha = np.linspace(1, 0, nquad)  # linear mapping for edge parametrization
+        V[quad_ids] = alpha[:, np.newaxis]*epsix*edgei + (1-alpha)[:, np.newaxis]*epsixp*edgeip
+        V_corners[i], V_corners[indnext] = epsix * edgei, epsixp * edgeip
+        part_der[0] = self.evaluate_directional_derivative(V, V_corners)
 
-            V[quad_ids] = alpha[:, np.newaxis]*epsiy*edgei + (1-alpha)[:, np.newaxis]*epsiyp*edgeip
-            V_corners[i], V_corners[indnext] = epsiy * edgei, epsiyp * edgeip
-            part_der[1] = self.evaluate_directional_derivative(V, V_corners)
+        V[quad_ids] = alpha[:, np.newaxis]*epsiy*edgei + (1-alpha)[:, np.newaxis]*epsiyp*edgeip
+        V_corners[i], V_corners[indnext] = epsiy * edgei, epsiyp * edgeip
+        part_der[1] = self.evaluate_directional_derivative(V, V_corners)
 
-            return part_der  # no normalization as it is done in evaluate_directional_derivative
+        return part_der  # no normalization as it is done in evaluate_directional_derivative
 
     def cost_fun(self):
         return 0.5*np.sum(np.real(self.diffs * self.diffs.conj())) / self._nactive_mic / self._nactive

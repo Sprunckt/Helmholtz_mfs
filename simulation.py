@@ -1,5 +1,5 @@
 import numpy as np
-from mfs import HelmholtzMFS, SampledBoundary, compute_hessian2d
+from mfs import HelmholtzMFS, SampledBoundary
 from utils import Polygon, c, ExtrudedPolygon, in_polygon, Cuboid
 import multiprocessing as mp
 import time

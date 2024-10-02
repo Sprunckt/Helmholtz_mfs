@@ -18,12 +18,6 @@ def fundamental_solution_derivative(dist, k):
     return -(1j/4) * k * hankel1(1, k*dist)
 
 
-def fundamental_solution_derivative2(dist, k):
-    """Compute the second order derivative of the fundamental solution at the points given the distances,
-    return a matrix of shape npoints, nsources."""
-    return (1j/8) * k**2 * (hankel1(2, k*dist) - hankel1(0, k*dist))
-
-
 def fundamental_solution3d(points, sources, k):
     """Compute the fundamental solution at the points given the sources, return a matrix of shape npoints, nsources."""
     norms = np.linalg.norm(points[:, np.newaxis, :] - sources[np.newaxis, :, :], axis=-1)
@@ -512,20 +506,4 @@ class HelmholtzMFS:
         self.room_bound = new_bound
         self.nbound = len(self.room_bound)
 
-
-def compute_hessian2d(points, k, src_pos):
-    """Compute the hessian for the given points at a single source position (shape (1, 2)) at a wavenumber k.
-     Return a matrix of shape (npoints, 2, 2)."""
-    diffs = points[:, np.newaxis, :] - src_pos[np.newaxis, :, :]
-    norms = np.linalg.norm(diffs, axis=-1)
-    hess = np.zeros((len(points), 2, 2), dtype=complex)
-    hess[:, 0, 0] = np.reshape(fundamental_solution_derivative2(norms, k) * diffs[:, :, 0] ** 2 / norms ** 2 +
-                               (1/norms - diffs[:, :, 0]**2/norms**3) * fundamental_solution_derivative(norms, k), -1)
-    hess[:, 1, 1] = np.reshape(fundamental_solution_derivative2(norms, k) * diffs[:, :, 1] ** 2 / norms ** 2 +
-                               (1/norms - diffs[:, :, 1]**2/norms**3) * fundamental_solution_derivative(norms, k), -1)
-    hess[:, 0, 1] = np.reshape(diffs[:, :, 0] * diffs[:, :, 1] * (fundamental_solution_derivative2(norms, k)/norms**2 -
-                               fundamental_solution_derivative(norms, k)/norms**3), -1)
-    hess[:, 1, 0] = hess[:, 0, 1]
-
-    return hess
 

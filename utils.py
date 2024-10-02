@@ -514,7 +514,7 @@ def rotate(points, angle, center):
     return (points - center) @ rot + center
 
 
-def random_poly(bounds, nvertices, in_constraints=None, min_length=None):
+def random_poly(bounds, nvertices, in_constraints=None, min_length=None, min_angle=None, max_angle=None, min_dist=0.):
     if type(bounds) == float:
         gen_fun = lambda: random_point_disk(bounds, nvertices)
     else:
@@ -529,8 +529,12 @@ def random_poly(bounds, nvertices, in_constraints=None, min_length=None):
             poly = Polygon(vertices)
             if min_length is not None and np.min(poly.lengths) < min_length:
                 continue
+            if min_angle is not None and np.min(poly.angles) < min_angle:
+                continue
+            if max_angle is not None and np.max(poly.angles) > max_angle:
+                continue
             if in_constraints is not None:
-                if np.all(poly.is_in(in_constraints)):
+                if np.all(poly.is_in(in_constraints, min_dist=min_dist)):
                     return poly
             else:
                 return poly

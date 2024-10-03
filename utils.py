@@ -179,11 +179,7 @@ class Polygon:
         trigonometric order) as polar axis. Return angles and vectors from vertices to points."""
         diffs = points[:, np.newaxis, :2] - self.vertices[np.newaxis, :self.nedges, :2]  # shape (npoints, nvertices, 2)
         norms = np.linalg.norm(diffs, axis=2)
-
-        # shape (npoints, nvertices)
-        angles = mod2pi(np.arctan2(np.abs(diffs[:, :, 0]*self.edges[:, 1] - diffs[:, :, 1]*self.edges[:, 0]),
-                                   diffs[:, :, 0]*self.edges[:, 0] + diffs[:, :, 1]*self.edges[:, 1]))
-
+        angles = mod2pi(np.arctan2(diffs[:, :, 1], diffs[:, :, 0]) - self.polar_angles)
         return angles, diffs, norms
 
     def sample_inside(self, sep):

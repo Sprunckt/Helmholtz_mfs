@@ -325,7 +325,11 @@ class Polygon:
     def convex_projection(self, update_origin=False):
         """Update the polygon to its convex hull."""
         self.update_vertices(self.vertices[ConvexHull(self.vertices).vertices], update_origin=update_origin)
-
+        
+    def get_volume(self):
+        """Compute the volume of the polygon using the shoelace formula."""
+        return 0.5 * np.abs(np.sum(self.vertices[:, 0] * np.roll(self.vertices[:, 1], -1) -
+                                   np.roll(self.vertices[:, 0], -1) * self.vertices[:, 1]))
     def plot(self):
         plt.plot(self.vertices[:, 0], self.vertices[:, 1], 'x')
         plt.plot(self.vertices[:, 0], self.vertices[:, 1], 'k')

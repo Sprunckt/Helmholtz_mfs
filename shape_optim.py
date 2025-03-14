@@ -22,14 +22,14 @@ def vert_check_stop(log, patience, tol):
 class ShapeOptimizer:
     def __init__(self, init_vertices: np.ndarray, fs: float, nfreq: int, source_pos: np.ndarray, mic_pos: np.ndarray,
                  measurements: np.ndarray, dx: float, nprocess=1, n_int=1000, parametrization="half-planes",
-                 sim_kwargs=None, src_ampl=None, verbose=False, min_length=0.25, min_edges=None):
+                 sim_kwargs=None, src_ampl=None, verbose=False, min_length=0.25, min_edges=None, max_angle=3.):
         self.parametrization = parametrization
 
         if parametrization == "half-planes":
             origin = np.reshape(source_pos.copy(), -1)
         else:
             origin = None
-        self.min_length = min_length
+        self.min_length, self.max_angle = min_length, max_angle
         if sim_kwargs is None:
             sim_kwargs = {"boundsep": 0.05}
         self.sim_p = Simulation(vertices=init_vertices, fs=fs, nfreq=nfreq, dx=dx, origin=origin,
@@ -38,7 +38,6 @@ class ShapeOptimizer:
         sim_kwargs_q["beta"] = - np.asarray(sim_kwargs_q["beta"])  # todo: handle callable case
         self.sim_q = Simulation(vertices=init_vertices, fs=fs, nfreq=nfreq, dx=dx, pos_src=mic_pos,
                                 origin=origin, **sim_kwargs_q)
-
         self.source_pos = source_pos
         self.mic_pos = mic_pos
         self.nmics = len(mic_pos)
@@ -137,37 +136,37 @@ class ShapeOptimizer:
         for i in range(neval_search):
             new_params = update_fun(curr_params, curr_step, grad)  # apply update
             if verbose:
-                print("step: ", curr_step)
+                print("step: ", curr_step, flush=True)
             success = self.update_sim(new_params, update_state=True, update_adjoint=False, convex_proj=convex_proj,
                                       bounds=bounds, check_in=hard_in_constraints, allow_reduce=self.nedges)
             curr_step = curr_step * step_decrease
 
             if not success:
                 new_cost = np.inf
-                print("Polygon update failed, skipping")
+                print("Polygon update failed, skipping", flush=True)
                 continue
 
             new_cost = self.cost_fun()
             if penalization != np.inf:
                 pen = self._penalize(in_constraints, penalization)
                 if verbose and pen > 0:
-                    print("applying penalization : " + str(pen))
+                    print("applying penalization : " + str(pen), flush=True)
                 new_cost += pen
             if verbose:
-                print("cost: ", new_cost)
+                print("cost: ", new_cost, flush=True)
 
             if new_cost < start_cost:
                 if i == 0:
                     init_decrease = True
                 if verbose:
-                    print("costfunction decreased, early stopping")
+                    print("costfunction decreased, early stopping", flush=True)
                 break
 
         if new_cost == np.inf:
-            print("No valid step found to update polygon, failure")
+            print("No valid step found to update polygon, failure", flush=True)
         
         if verbose:
-            print("line search time: ", time.time()-tstart)
+            print("line search time: ", time.time()-tstart, flush=True)
         
         return new_cost, grad, init_decrease
 
@@ -263,9 +262,10 @@ class ShapeOptimizer:
         self._increase_frequency_range(schedule)
         self._batch(schedule)
 
-        if self.sim_p.poly.nedges != len(self.sim_p.mfs.beta) or  self.sim_q.poly.nedges != len(self.sim_q.mfs.beta):   # todo: remove
-                    self.sim_p.mfs.beta = np.array([self.sim_p.mfs.beta[0] for _ in range(self.sim_p.poly.nedges)])
-                    self.sim_q.mfs.beta = np.array([self.sim_q.mfs.beta[0] for _ in range(self.sim_p.poly.nedges)])
+        if self.sim_p.poly.nedges != len(self.sim_p.mfs.beta):   # todo: remove
+            self.sim_p.mfs.beta = np.array([self.sim_p.mfs.beta[0] for _ in range(self.sim_p.poly.nedges)])
+            self.sim_q.mfs.beta = - self.sim_p.mfs.beta
+        
         self.update_sim(update_state=True, update_adjoint=True)
 
         log["schedule"] = schedule
@@ -303,7 +303,7 @@ class ShapeOptimizer:
                                                           in_constraints=in_constraints, convex_proj=convex_proj,)
 
             if cost == np.inf:
-                print("Optimization failed, stopping")
+                print("Optimization failed, stopping", flush=True)
                 break
 
             if init_decreased:
@@ -365,7 +365,7 @@ class ShapeOptimizer:
             if self.verbose:
                 print("iteration {} done, freq it counter {}".format(it, freq_it_counter))
                 print("cost: ", cost, "grad_norm k-1: ", gradcost, "titer: ", t2-t1)
-                print("current polygon: \n", self.sim_p.poly.vertices)
+                print("current polygon: \n", self.sim_p.poly.vertices, flush=True)
             it += 1
 
             if (save_path is not None) and (it % save_freq == 0):
@@ -427,21 +427,22 @@ class ShapeOptimizer:
                    bounds=(-15, 15), check_in=None, convex_proj=False, allow_reduce=3):
         if new_params is not None:
             success = self.sim_p.update_poly(new_params, parametrization=self.parametrization, convex_proj=convex_proj,
-                                             bounds=bounds, check_in=check_in, min_length=self.min_length)
+                                             bounds=bounds, check_in=check_in, min_length=self.min_length, max_angle=self.max_angle)
+            self.sim_q.update_poly(new_params, parametrization=self.parametrization, convex_proj=convex_proj,
+                                   bounds=bounds, check_in=check_in, min_length=self.min_length, max_angle=self.max_angle)
             
             if self.sim_p.poly.nedges < allow_reduce: 
                 success = False
             if success:
-                if self.sim_p.poly.nedges != len(self.sim_p.mfs.beta) or  self.sim_q.poly.nedges != len(self.sim_q.mfs.beta):   # todo: update in case of different betas
+                if self.sim_p.poly.nedges != len(self.sim_p.mfs.beta):   # todo: update in case of different betas
                     self.sim_p.mfs.beta = np.array([self.sim_p.mfs.beta[0] for _ in range(self.sim_p.poly.nedges)])
-                    self.sim_q.mfs.beta = np.array([self.sim_q.mfs.beta[0] for _ in range(self.sim_p.poly.nedges)])
-                self.sim_q.update_poly(new_params, parametrization=self.parametrization, convex_proj=convex_proj)
+                    self.sim_q.mfs.beta = - self.sim_p.mfs.beta
                 self._update_quadrature_points()
-
         else:
             success = True
 
         if success:
+            print("Poly updated:", self.sim_p.poly.vertices, self.sim_p.poly.angles, flush=True)
             if update_state:
                 self._update_state()
             if update_adjoint:
@@ -548,16 +549,6 @@ class ShapeOptimizer:
             grad[i] = gradfun(i)
         return grad 
 
-    def evaluate_costfun_dir(self, direction, step, nb_step):
-        res = np.zeros(nb_step)
-        params = self.get_params()
-        for i in range(nb_step):
-            print("step {}, displacement {}".format(i, step*(i+1)))
-            params = params + step*direction 
-            self.update_sim(params, update_adjoint=False, update_state=True)
-            res[i] = self.cost_fun()
-        return res
-
     def random_multiscale_fit(self, bounds, n_steps_final, n_steps_ini, max_freq_ini, min_freq_ini, 
                               fit_params, n_ini=10,  patience_final=None, n_edges=None, save_path=None,
                               br_params=None):
@@ -594,22 +585,26 @@ class ShapeOptimizer:
         
         costs, params, logs = np.zeros(n_ini), [], []
         curr_ini = 0
+        fit_params["decrease_period"], old_period = 1, fit_params.get("decrease_period")  # speed up initialization
+        fit_params["step_decrease"], old_decrease = 0.6, fit_params.get("step_decrease")
         while curr_ini < n_ini:
+            self.sim_p.mfs.beta = np.array([self.sim_p.mfs.beta[0] for _ in range(n_edges)])
+            self.sim_q.mfs.beta = - self.sim_p.mfs.beta
+
             if save_path is not None:  # contain base path
                 fit_params["save_path"] = save_path.split(".json")[0] + "_{}.json".format(curr_ini)
             print("Initialization number: ", curr_ini)
-            vertices = random_poly(bounds, n_edges, in_constraints=in_constraints, min_length=2., min_dist=0.5, 
-                                   min_angle=np.pi/4, max_angle=3*np.pi/4).vertices
+            vertices = random_poly(bounds, n_edges, in_constraints=in_constraints, min_length=.5, min_dist=0.5).vertices  # old 3*np.pi/4, min°length 2
             self.parametrization = "vertices"
             success = self.update_sim(vertices, update_adjoint=False, update_state=False)
             print("polyshape" , vertices.shape)
             if not success:
-                print("Initialization failed, trying again")
+                print("Initialization failed, trying again", flush=True)
                 continue
             self.parametrization = parametrization 
             res, log, cost = self.fit(**fit_params)
             if cost == np.inf:  # optimization failed, try another init
-                print("Initialization failed, trying again")
+                print("Initialization failed, trying again", flush=True)
                 continue 
 
             if (fit_params["schedule"]["freq_batch_size"] > 0) or (fit_params["schedule"]["mic_batch_size"] > 0):
@@ -630,7 +625,7 @@ class ShapeOptimizer:
             new_params, costs, new_logs = [], np.zeros(n_keep[i]), []
             fit_params["niter"] = n_iter[i]
             for j in range(n_keep[i]):
-                print("Initialization number: ", ini_num[j])
+                print("Initialization number: ", ini_num[j], flush=True)
                 fit_params["old_log"] = logs[best_ind[j]]
                 if save_path is not None:  # contain base path
                     fit_params["save_path"] = save_path.split(".json")[0] + "_{}.json".format(ini_num[j])
@@ -646,8 +641,14 @@ class ShapeOptimizer:
                 new_params.append(self.get_params())
             params = new_params
             logs = new_logs
+
         best_ind = np.argmin(costs)
         best_cost = costs[best_ind]
+        self.sim_p.mfs.beta = np.array([self.sim_p.mfs.beta[0] for _ in range(len(params[best_ind]))])
+        self.sim_q.mfs.beta = - self.sim_p.mfs.beta
+
+        # restore decrease parameters for final fit
+        fit_params["step_decrease"], fit_params["decrease_period"] = old_decrease, old_period  
         self.update_sim(params[best_ind], update_adjoint=False, update_state=False)
 
         tend1 = time.time()
@@ -666,17 +667,6 @@ class ShapeOptimizer:
         res, log, _ = self.fit(**fit_params)
         print("total time: {}, final cost: {}".format(time.time() - tstart, log["cost"][-1]))
         return res, log, log["cost"][-1]  # return the final optimization result
-    
-    def cost_fun_embed(self, params):
-        success = self.update_sim(np.reshape(params, [-1, 2]), update_state=False, update_adjoint=False, 
-                                  convex_proj=True, check_in=np.concatenate([self.source_pos, self.mic_pos]))
-        if success:
-            self._update_state()
-            res = self.cost_fun()
-        else:
-            res = 1e16 
-        return res
-
 
 def _step_update_params(params, step, grad):
     return params - step * grad

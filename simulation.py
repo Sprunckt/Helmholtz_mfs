@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 class Simulation:
     def __init__(self, vertices: np.ndarray, fs: float, nfreq: int, boundsep: float, dx: float, pos_src: np.ndarray,
                  cond='neumann', add_src=15, nsrc_schedule=None, min_dist=0.01, error_sep=None, error_thresh=0.05,
-                 sep_red=0.8, src_ampl=None, beta=None, height=0., poly_virt=None, convexify=False, origin=None):
+                 sep_red=0.8, src_ampl=None, beta=None, height=0., poly_virt=None, convexify=False, origin=None, vmin_dist=0):
         """
         Simulation class for Helmholtz equation: simulate a source at pos_src in a polygonal domain with boundary
         conditions at different frequencies. Can generate time-domain signals by applying an inverse Fourier transform.
@@ -42,7 +42,8 @@ class Simulation:
             assert src_ampl.shape == (len(pos_src), nfreq), "src_ampl should have shape (len(pos_src), nfreq)"
         src_ampl[:, 0] = 0.  # zero amplitude for freq 0
         self.src_ampl = src_ampl
-
+        self.vmin_dist = vmin_dist
+        
         self.fs, self.dx = fs, dx
         self.convexify = convexify
         if height > 0 or np.asarray(vertices).shape == (3,):
@@ -169,7 +170,7 @@ class Simulation:
                     nsrc_schedule["sep"][i] = nsrc_schedule["sep"][i] * sep_red
 
                     self.vpos[i] = SampledBoundary(self.poly_virt, nsrc_schedule["sep"][i],
-                                                   min_dist=0., sample_type="separation", dx=self.dx,
+                                                   min_dist=self.vmin_dist, sample_type="separation", dx=self.dx,
                                                    distribution='uniform')
 
                     print("error {} above threshold, retrying "
@@ -222,10 +223,10 @@ class Simulation:
         self.ampl = ampl
 
     def update_poly(self, new_vert, new_virt_vert=None, parametrization="vertices",
-                    bounds=None, check_in=None, convex_proj=False, min_length=None):
+                    bounds=None, check_in=None, convex_proj=False, min_length=None, max_angle=None):
         if parametrization == "vertices":
             success = self.poly.update_vertices(new_vert, bounds=bounds, check_in=check_in, convex_proj=convex_proj,
-                                                update_origin=True, min_length=min_length)
+                                                update_origin=True, min_length=min_length, max_angle=max_angle)
             if new_virt_vert is not None:
                 self.poly_virt.update_vertices(new_virt_vert, bounds=bounds, update_origin=True)
             elif self.convexify:
@@ -343,7 +344,7 @@ class Simulation:
             for ind in ind_comp:
                 self.ampl[ind] = self.simulate_freq(ind, verbose=verbose)
         elif nworkers > 1:
-            with mp.Pool(processes=nworkers) as pool:
+            with mp.get_context('fork').Pool(processes=nworkers) as pool:
                 partfunc = partial(self.simulate_freq, verbose=verbose)
                 ampl = pool.map(partfunc, ind_comp)
                 for i, ind in enumerate(ind_comp):
@@ -370,7 +371,7 @@ class Simulation:
             for k, i in enumerate(freq_ind):
                 res[:, k] = self.compute_freq(compute_points, i, use_src=use_src)
         elif nworkers > 1:
-            with mp.Pool(processes=nworkers) as pool:
+            with mp.get_context('fork').Pool(processes=nworkers) as pool:
                 # local function to compute the solution at a given frequency, take only ind as argument
                 fun = partial(self.compute_freq, compute_points, use_src=use_src)
                 res = np.stack(pool.map(fun, freq_ind), axis=1)
@@ -400,7 +401,7 @@ class Simulation:
             for k, i in enumerate(freq_ind):
                 res_grad[:, k] = self.compute_grad_freq(compute_points, i, use_src=use_src)
         elif nworkers > 1:
-            with mp.Pool(processes=nworkers) as pool:
+            with mp.get_context('fork').Pool(processes=nworkers) as pool:
                 # local function to compute the solution at a given frequency, take only ind as argument
                 fun = partial(self.compute_grad_freq, compute_points, use_src=use_src)
                 res_grad = np.stack(pool.map(fun, freq_ind), axis=1)

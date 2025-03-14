@@ -177,7 +177,7 @@ class HelmholtzMFS:
         else:
             # if beta is given, it must be a vector of length nedges
             assert len(beta) == self.poly.nedges + 2*(self.d - 2), "beta must be a vector of length nedges if d=2, " \
-                                                                      "nedges + 2 if d=3"
+                                                                      "nedges + 2 if d=3, is {}".format(beta)
             self.beta = np.asarray(beta)
         self.beta_is_callable = callable(self.beta[0])
 
@@ -206,7 +206,7 @@ class HelmholtzMFS:
             try:
                 res = np.linalg.lstsq(A, b, rcond=-1)[0]
             except:
-                print("solve error, freq:", 343*k/np.pi/2)
+                print("solve error, freq:", 343*k/np.pi/2, flush=True)
                 exit(1)
                 
         elif solver == "tsvd":

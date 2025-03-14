@@ -78,7 +78,6 @@ class Polygon:
         if parametrization == "vertices":
             if origin is None:
                 self.origin = np.mean(inp, axis=0)
-                print('Polygon origin automatically set to {}'.format(self.origin))
             else:
                 self.origin = origin
             self.update_vertices(inp)
@@ -95,13 +94,9 @@ class Polygon:
     def shift(self, factor):
         """Shift the polygon by a factor, by moving the vertices along the bisecting line.
         Return a new 2D Polygon object."""
-
-        barycenter = np.mean(self.vertices[:self.nedges, :2], axis=0)
-        vertices_shifted = self.vertices[:self.nedges, :2] - barycenter
-        vertices = (vertices_shifted * factor / np.linalg.norm(vertices_shifted, axis=-1)[:, np.newaxis] +
-                    self.vertices[:self.nedges, :2])
-
-        return Polygon(vertices)
+        mean_norm = 0.5*(self.normals + np.roll(self.normals, 1, axis=0))
+        new_vertices = self.vertices + mean_norm * factor
+        return Polygon(new_vertices)
 
     def sample_edge(self, n, edge_id, distribution='uniform', sample_type="total", min_dist=None, return_nodes=False):
         if distribution == "uniform":
@@ -190,18 +185,18 @@ class Polygon:
         points, triang = gmsh_sampling(self.vertices[:self.nedges, :], mesh_size=sep)
         return points[:, :2], triang
 
-    def _update_edges_and_angles(self):
+    def _update_edges(self):
         self.edges = np.roll(self.vertices, -1, axis=0) - self.vertices
-        self.renormed_edges = self.edges / np.linalg.norm(self.edges, axis=1)[:, np.newaxis]
         self.nedges = len(self.edges)
         self.lengths = np.linalg.norm(self.edges, axis=1)  # length of each edge
-        renormed_edges = self.edges / self.lengths[:, np.newaxis]
+
+    def _update_angles(self):
+        self.renormed_edges = self.edges / self.lengths[:, np.newaxis]
         # compute inner angles
-        dotprod = np.sum(-np.roll(renormed_edges, 1, axis=0) * renormed_edges, axis=1)
-        sin_sign = -np.sign(np.cross(-np.roll(renormed_edges, 1, axis=0), renormed_edges))
+        dotprod = np.sum(-np.roll(self.renormed_edges, 1, axis=0) * self.renormed_edges, axis=1)
+        sin_sign = -np.sign(np.cross(-np.roll(self.renormed_edges, 1, axis=0), self.renormed_edges))
         self.angles = np.arccos(np.clip(dotprod, -1, 1))
         self.angles = mod2pi(np.where(sin_sign < 0, 2 * np.pi - self.angles, self.angles))
-        self.translated_vertices = self.vertices - self.origin
         # compute polar angles of each edge with respect to the x-axis assuming origin is a vertex, in [-2, -2+2pi]
         self.polar_angles = mod2pi(np.arctan2(self.edges[:, 1], self.edges[:, 0]))
 
@@ -244,7 +239,8 @@ class Polygon:
         angles = mod2pi(np.arctan2(self.vertices[:, 1] - self.origin[1], self.vertices[:, 0] - self.origin[0]))
         self.vertices = self.vertices[np.argsort(angles)]
 
-    def update_vertices(self, new_vert, sort=False, bounds=None, check_in=None, convex_proj=False, update_origin=False, min_length=None):
+    def update_vertices(self, new_vert, sort=False, bounds=None, check_in=None, convex_proj=False, update_origin=False, min_length=None,
+                        max_angle=None):
         if bounds is not None:
             if not np.all((bounds[0] < new_vert) & (new_vert < bounds[1])):
                 return False 
@@ -253,27 +249,35 @@ class Polygon:
 
         self.vertices = new_vert.copy()
 
-        if min_length is not None: # merge vertices
-            while np.min(self.lengths) < min_length:
-                self._update_edges_and_angles()
+        self._update_edges()
 
+        if min_length is not None: # merge vertices
+            while np.min(self.lengths) < min_length and self.nedges >= 3:
                 indmin = np.argmin(self.lengths)
                 v1, v2 = self.vertices[indmin], self.vertices[(indmin + 1) % self.nedges]
                 vmid = (v1 + v2) / 2.
                 self.vertices[indmin] = vmid 
                 self.vertices = np.concatenate([self.vertices[:indmin+1], self.vertices[indmin+2:]], axis=0)
-        
+                self._update_edges()
+        self._update_angles()
+        if max_angle is not None:
+            while np.max(self.angles) > max_angle and self.nedges >= 3:
+                indmax = np.argmax(self.angles)
+                self.vertices = np.concatenate([self.vertices[:indmax], self.vertices[indmax+1:]], axis=0)
+                self._update_edges()
+                self._update_angles()
         if sort:
             self.sort_vertices()
+            self._update_edges()
+
         if len(self.vertices) < 3:
-            print("Number of vertices should exceed 2")
+            print("Number of vertices should exceed 2", flush=True)
             return False
 
         if update_origin:
             self.origin = np.mean(self.vertices, axis=0)
 
-        self._update_edges_and_angles()
-        
+        self._update_angles()
         self.normals = np.stack([self.edges[:, 1], -self.edges[:, 0]], axis=1)
         self.normals /= np.linalg.norm(self.normals, axis=1)[:, np.newaxis]
 

@@ -28,12 +28,6 @@ def plot_complex(xx, yy, data, extent, vmin=None, vmax=None):
 
     plt.show()
 
-
-def chebyshev_nodes(a, b, N):
-    """Compute N Chebyshev nodes on the interval [a, b]."""
-    return 0.5*(a + b) + 0.5*(b - a)*np.cos(np.pi*(2*np.arange(N)[::-1] + 1) / (2*N))
-
-
 def out_polygon(points, vertices, min_dist=0.0):
     """Check if points (shape (npoints, d)) are outside and at a distance superior to min_dist of a (not necessarily
     convex) polygon given by its vertices (shape (nvertices, d)) in counter-clockwise order, or by a Polygon object.
@@ -98,23 +92,19 @@ class Polygon:
         new_vertices = self.vertices + mean_norm * factor
         return Polygon(new_vertices)
 
-    def sample_edge(self, n, edge_id, distribution='uniform', sample_type="total", min_dist=None, return_nodes=False):
-        if distribution == "uniform":
-            if min_dist is None:
-                if sample_type == "total":
-                    nodes = np.linspace(0, 1, n + 2)[1:-1]
-                else:  # n is the step
-                    nodes = np.arange(0, 1, n / self.lengths[edge_id])[1:]  # might end on the last point
-            else:
-                relative_dist = min_dist / self.lengths[edge_id]
-
-                if sample_type == "total":
-                    nodes = np.linspace(relative_dist, 1 - relative_dist, n, endpoint=True)
-                else:  # n is the step
-                    nodes = np.arange(relative_dist, 1 - relative_dist, n / self.lengths[edge_id])
-
+    def sample_edge(self, n, edge_id, sample_type="total", min_dist=None, return_nodes=False):
+        if min_dist is None:
+            if sample_type == "total":
+                nodes = np.linspace(0, 1, n + 2)[1:-1]
+            else:  # n is the step
+                nodes = np.arange(0, 1, n / self.lengths[edge_id])[1:]  # might end on the last point
         else:
-            nodes = chebyshev_nodes(0, 1, n)
+            relative_dist = min_dist / self.lengths[edge_id]
+
+            if sample_type == "total":
+                nodes = np.linspace(relative_dist, 1 - relative_dist, n, endpoint=True)
+            else:  # n is the step
+                nodes = np.arange(relative_dist, 1 - relative_dist, n / self.lengths[edge_id])
 
         v1, v2 = self.vertices[edge_id], self.vertices[(edge_id + 1) % self.nedges]
         res = v1 + nodes[:, np.newaxis]*(v2 - v1)
@@ -124,7 +114,7 @@ class Polygon:
         else:
             return res
 
-    def sample(self, npoints, distribution='uniform', min_dist=None, sample_type="total", return_nodes=False):
+    def sample(self, npoints, min_dist=None, sample_type="total", return_nodes=False):
         if sample_type == 'total':
             lengths = self.lengths / np.sum(self.lengths)
             lengths = np.round(lengths * npoints).astype(int)
@@ -137,7 +127,7 @@ class Polygon:
             if sample_type == 'total':
                 n = lengths[i]
 
-            boundary_edge, nodes = self.sample_edge(n, i, distribution, sample_type=sample_type,
+            boundary_edge, nodes = self.sample_edge(n, i, sample_type=sample_type,
                                                     min_dist=min_dist, return_nodes=True)
 
             boundary.append(boundary_edge)
@@ -161,13 +151,8 @@ class Polygon:
     def get_normal(self, edge_id):
         return self.normals[edge_id]
 
-    def get_params(self, parametrization):
-        if parametrization == "vertices":
-            return self.vertices 
-        elif parametrization == "half-planes":
-            return self.projs 
-        else:
-            raise ValueError("unknown parametrization, accepted values:, 'half-planes', 'vertices'")
+    def get_params(self):
+        return self.vertices
 
     def compute_angles(self, points):
         """Compute polar angles of points with respect to the vertices of the polygon, using the next edge (in
@@ -304,15 +289,6 @@ class Polygon:
         return np.all(self.get_edge_distances(points)
                       <= self.distances[np.newaxis, :] - min_dist + tol, axis=1)
 
-    def random_point_in_poly(self, npoints, min_dist=0):
-        minx, miny, maxx, maxy = np.min(self.vertices[:,0]), np.min(self.vertices[:,1]), np.max(self.vertices[:,0]), np.max(self.vertices[:,1])
-        points = []
-        while len(points) < npoints:
-            pnt = np.array([[np.random.uniform(minx, maxx), np.random.uniform(miny, maxy)]])
-            if self.is_in(pnt, min_dist=min_dist)[0]:
-                points.append(pnt)
-        return np.concatenate(points, axis=0)
-
     def integrate_edge(self, vals, quad_nodes, edge_id):
         """Integrate the values vals over the edge with id edge_id, using the quadrature nodes quad_nodes and the
         simpson rule."""
@@ -348,139 +324,6 @@ class Polygon:
 
         plt.axis('equal')
         plt.show()
-
-
-class Ellipse:
-    def __init__(self, radiusx, radiusy, center=None):
-        self.radiusx = radiusx
-        self.radiusy = radiusy
-        if center is None:
-            self.center = np.zeros(2)
-        else:
-            self.center = center.copy()
-
-    def sample(self, npoints):
-        theta = np.linspace(0, 2 * np.pi, npoints, endpoint=False)
-        normvec = np.stack([self.radiusy * np.cos(theta), self.radiusx * np.sin(theta)], axis=1)
-        return (np.stack([self.radiusx*np.cos(theta), self.radiusy*np.sin(theta)], axis=1) + self.center[np.newaxis, :],
-                normvec / np.linalg.norm(normvec, axis=1)[:, np.newaxis])
-
-
-class ExtrudedPolygon(Polygon):
-    def __init__(self, vertices, height):
-        super().__init__(vertices)
-        self.height = height
-        vertices = np.zeros((2 * self.nedges, 3))
-        vertices[:self.nedges, :2], vertices[self.nedges:, :2] = self.vertices.copy(), self.vertices.copy()
-        vertices[self.nedges:, 2] = self.height
-
-        normals = np.zeros((self.nedges + 2, 3))
-        normals[:self.nedges, :2] = self.normals.copy()
-        normals[self.nedges, 2], normals[self.nedges + 1, 2] = -1., 1.  # bottom and top normals
-
-        self.vertices, self.normals = vertices, normals
-
-    def sample(self, separation, distribution='uniform', min_dist=0.01, sample_type="separation",
-               return_nodes=False, return_triangulation=False):  # return_nodes is for compatibility with Polygon
-        if distribution != 'uniform':  # kept for compatibility with Polygon
-            raise NotImplementedError("Only uniform distribution is implemented for extruded polygons.")
-        if sample_type != 'separation':
-            raise NotImplementedError("Only separation sampling is implemented for extruded polygons.")
-        renormed_edges = self.edges / np.linalg.norm(self.edges, axis=1)[:, np.newaxis]
-
-        boundary, bound_ids, normals, triangulations = [], [], [], []
-        e3 = np.array([0, 0, 1], dtype=float)*(self.height - 2*min_dist)
-        for i in range(self.nedges):  # vertical faces
-            shifted1 = self.vertices[i] + np.array([renormed_edges[i, 0] * min_dist,
-                                                    renormed_edges[i, 1] * min_dist, min_dist])
-            shifted2 = self.vertices[(i + 1) % self.nedges] + np.array([-renormed_edges[i, 0] * min_dist,
-                                                                        -renormed_edges[i, 1] * min_dist, min_dist])
-            points, triang = gmsh_sampling(np.stack([shifted1, shifted2, shifted2 + e3, shifted1 + e3], axis=0),
-                                           mesh_size=separation)
-
-
-            boundary.append(points)
-            bound_ids.append(np.full(points.shape[0], i))
-            normals.append(np.full([points.shape[0], 3], self.normals[i]))
-            triangulations.append(triang)
-        # sample bottom and top : mesh the inside of a smaller polygon
-        inside_poly = self.shift(-min_dist)
-        points, triang = inside_poly.sample_inside(separation)
-        boundary.append(np.concatenate([points, np.zeros([points.shape[0], 1])], axis=1))  # bottom
-        boundary.append(boundary[-1].copy())  # top
-        boundary[-1][:, 2] = self.height
-
-        normals.append(np.full((points.shape[0], 3), [0., 0., -1.]))
-        normals.append(np.full((points.shape[0], 3), [0., 0., 1.]))
-        bound_ids.append(np.full(points.shape[0], self.nedges))
-        bound_ids.append(np.full(points.shape[0], self.nedges + 1))
-        triangulations.append(triang)
-        triangulations.append(triangulations[-1].copy())
-        res = (np.concatenate(boundary), np.concatenate(normals), np.concatenate(bound_ids))
-        if return_nodes:
-            res += (None,)
-
-        if return_triangulation:
-            res += (triangulations,)
-        return res
-
-
-class Cuboid(Polygon):
-    def __init__(self, lx, ly, lz):
-        self.lx, self.ly, self.lz = lx, ly, lz
-
-        vertices = np.array([[0., 0, 0], [lx, 0, 0], [lx, ly, 0], [0, ly, 0],
-                             [0, 0, lz], [lx, 0, lz], [lx, ly, lz], [0, ly, lz]])
-
-        super().__init__(vertices[:4, :2])
-
-        self.vertices = vertices
-        normals = np.zeros((6, 3))
-        normals[:4, :2] = self.normals.copy()
-        normals[4, 2], normals[5, 2] = -1., 1.  # bottom and top normals
-        self.normals = normals
-        # self.normals = np.array([[0, 0, -1], [1, 0, 0], [0, 1, 0], [-1, 0, 0], [0, -1, 0], [0, 0, 1]])
-        self.nedges = 4  # for compatibility with ExtrudedPolygon
-
-    def sample(self, param, distribution='chebyshev', min_dist=0.01, sample_type="total", return_nodes=False):
-        # param is a 3-tuple giving the number of points in each direction
-
-        if sample_type == "separation":
-            # compute the corresponding number of points for each direction
-            param = (int(np.ceil(self.lx / param)),
-                     int(np.ceil(self.ly / param)),
-                     int(np.ceil(self.lz / param)))
-        nodesx = chebyshev_nodes(0, self.lx, param[0])
-        nodesy = chebyshev_nodes(0, self.ly, param[1])
-        nodesz = chebyshev_nodes(0, self.lz, param[2])
-
-        # first vertical face
-        nodesxy = np.stack(np.meshgrid(nodesx, nodesy), axis=-1).reshape(-1, 2)
-        nodesyz = np.stack(np.meshgrid(nodesy, nodesz), axis=-1).reshape(-1, 2)
-        nodesxz = np.stack(np.meshgrid(nodesx, nodesz), axis=-1).reshape(-1, 2)
-
-        boundary = [np.zeros([len(nodesxz), 3]), np.zeros([len(nodesyz), 3]), np.zeros([len(nodesxz), 3]),
-                    np.zeros([len(nodesyz), 3]), np.zeros([len(nodesxy), 3]), np.zeros([len(nodesxy), 3])]
-        boundary[0][:, 1], boundary[0][:, 0], boundary[0][:, 2] = 0, nodesxz[:, 0], nodesxz[:, 1]
-        boundary[1][:, 0], boundary[1][:, 1], boundary[1][:, 2] = self.lx, nodesyz[:, 0], nodesyz[:, 1]
-        boundary[2][:, 1], boundary[2][:, 0], boundary[2][:, 2] = self.ly, nodesxz[:, 0], nodesxz[:, 1]
-        boundary[3][:, 0], boundary[3][:, 1], boundary[3][:, 2] = 0, nodesyz[:, 0], nodesyz[:, 1]
-        boundary[4][:, :2], boundary[4][:, 2] = nodesxy, 0
-        boundary[5][:, :2], boundary[5][:, 2] = nodesxy, self.lz
-
-        bound_ids = [np.full(len(boundary[i]), i) for i in range(6)]
-        normals = [np.zeros([len(boundary[i]), 3]) for i in range(6)]
-        normals[0][:, 1], normals[2][:, 1] = -1, 1
-        normals[1][:, 0], normals[3][:, 0] = 1, -1
-        normals[4][:, 2], normals[5][:, 2] = -1, 1
-        bound_ids, boundary, normals = np.concatenate(bound_ids), np.concatenate(boundary), np.concatenate(normals)
-
-        return boundary, normals, bound_ids
-
-    def is_in(self, points, min_dist=0., tol=1e-6):
-        return ((-tol + min_dist <= points[:, 0]) & (self.lx - min_dist + tol >= points[:, 0]) &
-                (-tol + min_dist <= points[:, 1]) & (self.ly - min_dist + tol >= points[:, 1]) &
-                (-tol + min_dist <= points[:, 2]) & (self.lz - min_dist + tol >= points[:, 2]))
 
 
 def mod2pi(angle):

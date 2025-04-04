@@ -1,6 +1,6 @@
 import numpy as np
 from mfs import (SampledBoundary, particular_solution_gradient, robin_operator, particular_solution,
-                 fundamental_solution, fundamental_solution_derivative,particular_solution_tangential_gradient)
+                 fundamental_solution, fundamental_solution_derivative, robin_operator_efficient)
 from utils import Polygon, c
 import multiprocessing as mp
 import time
@@ -10,8 +10,8 @@ import matplotlib.pyplot as plt
 
 class Simulation:
     def __init__(self, vertices: np.ndarray, fs: float, nfreq: int, dx: float, pos_src: np.ndarray, mic_pos: np.ndarray,
-                 observations=None, add_src=15, nsrc_schedule=None, min_dist=0.01, error_thresh=0.05,
-                 sep_red=0.8, src_ampl=None, beta=0.1j, origin=None, vmin_dist=0, nworkers=1, simulate=False):
+                 observations=None, add_src=15, nsrc_schedule=None, min_dist=0.01, error_thresh=0.05, sep_red=0.8,
+                 src_ampl=None, beta=0.1j, origin=None, vmin_dist=0, nworkers=1, simulate=False, max_tries=5):
         """
         Simulation class for Helmholtz equation: simulate a source at pos_src in a polygonal domain with boundary
         conditions at different frequencies. Can generate time-domain signals by applying an inverse Fourier transform.
@@ -62,9 +62,10 @@ class Simulation:
             self.obs = np.zeros([len(mic_pos), self.nfreqs], dtype=complex)
 
         self.mic_pos = mic_pos  # microphone positions
-        self._to_simulate = np.ones(nfreq, dtype=bool)
-        self._to_simulate[0] = False
-        self._to_simulate[-1] = False
+
+        # will be used to store precomputed values
+        self._diffs, self._norms, self._diffs_src, self._norms_src = None, None, None, None
+        self._angles_part, self._norms_part = None, None
 
         if nsrc_schedule is None:
             # sampling strategy : 3 points per wavelength
@@ -93,11 +94,11 @@ class Simulation:
         print("Number of error points: ", len(self.error_bound))
 
         print("simulating frequency ", self.freqs[-1])
-        rel_error, max_tries = np.inf, 10
+        rel_error = np.inf
         t1 = time.time()
         while rel_error > error_thresh and max_tries > 0:  # increase number of sources until precision threshold is met
             max_tries -= 1
-            self.ampl[:, -1] = self.simulate_freq(-1, verbose=True, adjoint=False)
+            self.simulate(np.array([-1]), verbose=True, adjoint=False)
 
             # check error
             rel_error = self.evaluate_error(-1, adjoint=False)
@@ -121,7 +122,7 @@ class Simulation:
                     nerror = 1.3 * nbound
                     self.error_bound = SampledBoundary(self.poly, nerror, min_dist=min_dist, sample_type="total")
 
-            if max_tries == 0:
+            if max_tries == 0 and rel_error > error_thresh:
                 print("error threshold not reached, simulation might be inaccurate")
 
             t2 = time.time()
@@ -134,7 +135,8 @@ class Simulation:
         if simulate and nfreq > 2:
             self.simulate(ind=np.arange(1, nfreq-1), adjoint=False, verbose=True)
             # last frequency is not re-simulated : should compute the corresponding adjoint amplitudes
-            self.src_ampl_adj[:, -1] = self.obs[:, -1] - self.compute_freq(self.mic_pos, -1, adjoint=False)
+            self.src_ampl_adj[:, -1] = self.obs[:, -1] - np.reshape(self.compute(self.mic_pos, np.array([-1]),
+                                                                                 adjoint=False), -1)
 
     def get_nbound(self):
         return len(self.room_bound)
@@ -146,10 +148,16 @@ class Simulation:
                     increase_factor=1.1):
         success = self.poly.update_vertices(new_vert, bounds=bounds, check_in=check_in, convex_proj=convex_proj,
                                             update_origin=True, min_length=min_length, max_angle=max_angle)
+
         if success:  # resample polygon after update
             self.vbound = SampledBoundary(self.poly, self.nsrc_schedule["sep"], min_dist=0., dx=self.dx)
             self.room_bound = SampledBoundary(self.poly, sample_param=self.get_nvirt()*increase_factor,
                                               dx=0, min_dist=self.min_dist, sample_type='total')
+            self.error_bound = SampledBoundary(self.poly, sample_param=self.get_nbound()*1.3, dx=0,
+                                               min_dist=self.min_dist, sample_type='total')
+            self.factor = np.pi / self.poly.angles[None, :]  # angular factor for particular solutions
+            self.ampl = np.zeros([self.get_nvirt(), self.nfreqs], dtype=complex)
+            self.ampl_adj = np.zeros([self.get_nvirt(), self.nfreqs], dtype=complex)
         else:
             print("Failure to update the polygon")
         return success
@@ -165,15 +173,18 @@ class Simulation:
         if ind is None:
             ind = np.arange(1, self.nfreqs)
 
+        # precompute norms to reduce the number of calculations
+        self._precompute_diffs(points, self.vbound.bound), self._precompute_diffs_src(points, adjoint)
+
         t1 = time.time()
         if self.nworkers == 1:
             res = np.full([len(points), len(ind)], np.nan, dtype=np.complex128)
             for k, i in enumerate(ind):
-                res[:, k] = self.compute_freq(points, i, adjoint)
+                res[:, k] = self._compute_freq(i, adjoint)
         elif self.nworkers > 1:
             with mp.get_context('fork').Pool(processes=self.nworkers) as pool:
                 # local function to compute the solution at a given frequency, take only ind as argument
-                fun = partial(self.compute_freq, points, adjoint=adjoint)
+                fun = partial(self._compute_freq, adjoint=adjoint)
                 res = np.stack(pool.map(fun, ind), axis=1)
 
         t2 = time.time()
@@ -182,54 +193,46 @@ class Simulation:
 
         return res
 
-    def compute_freq(self, points, ind, adjoint=False):
+    def _compute_freq(self, ind, adjoint=False):
         ampl, ampl_src, src_pos = self._select_sources(ind, adjoint)
 
         # contribution from virtual sources
         res = np.sum(ampl[None, :len(self.vbound)] *
-                     fundamental_solution(np.linalg.norm(points[:, None, :] - self.vbound.bound[None, :, :],
-                                                         axis=-1), self.wave_numbers[ind]), axis=1)
+                     fundamental_solution(self._norms, self.wave_numbers[ind]), axis=1)
         # add contribution from particular solutions
-        angles, _, norms = self.poly.compute_angles(points)
         indstart, indstop = len(self.vbound), len(self.vbound) + self.poly.nedges
         for t in range(self.add_src):  # particular solutions contributions
-            res += np.sum(particular_solution(norms, angles, self.wave_numbers[ind], t * self.factor) *
+            res += np.sum(particular_solution(self._norms_part, self._angles_part,
+                                              self.wave_numbers[ind], t * self.factor) *
                           ampl[indstart:indstop].reshape(1, -1), axis=-1)
             indstart, indstop = indstop, indstop + self.poly.nedges
 
         # add source contribution
-        res += np.sum(ampl_src[None, :]*fundamental_solution(np.linalg.norm(points[:, None, :] - src_pos[None, :, :],
-                                                                            axis=-1),
-                                                             self.wave_numbers[ind]), axis=-1)
+        res += np.sum(ampl_src[None, :]*fundamental_solution(self._norms_src, self.wave_numbers[ind]), axis=-1)
 
         return res
 
-    def compute_grad_freq(self, points, ind, adjoint=False):
+    def compute_grad_freq(self, ind, adjoint=False):
         """Compute the gradient of the solution at the given points (shape (npoints, d)) at the given frequency"""
         ampl, ampl_src, src_pos = self._select_sources(ind, adjoint)
 
         k = self.wave_numbers[ind]
-        diffs = points[:, None, :] - self.vbound.bound[None, :, :]  # (np, npv, 2)
-        norms = np.linalg.norm(diffs, axis=-1)  # (np, npv)
-
-        grad = np.sum(fundamental_solution_derivative(norms, k)[:, :, None] * diffs
-                      / norms[:, :, None] * ampl[None, :len(self.vbound), None], axis=1)  # (np, 2)
+        grad = np.sum(fundamental_solution_derivative(self._norms, k)[:, :, None] * self._diffs
+                      / self._norms[:, :, None] * ampl[None, :len(self.vbound), None], axis=1)  # (np, 2)
 
         # add source contribution
-        diffs = points[:, None, :] - src_pos[None, :, :]  # (np, nsrc, 2)
-        norms = np.linalg.norm(diffs, axis=-1)  # (np, nsrc)
-        grad += np.sum(fundamental_solution_derivative(norms, k)[:, :, None] * diffs
-                       / norms[:, :, None] * ampl_src[None, :, None], axis=1)
-        angles, diffs, norms = self.poly.compute_angles(points)
+        grad += np.sum(fundamental_solution_derivative(self._norms_src, k)[:, :, None] * self._diffs_src
+                       / self._norms_src[:, :, None] * ampl_src[None, :, None], axis=1)
         indstart, indstop = len(self.vbound), len(self.vbound) + self.poly.nedges
         for t in range(self.add_src):
-            grad += np.sum(particular_solution_gradient(norms, angles, k, t * self.factor, self.poly.polar_angles) *
-                           ampl[None, indstart:indstop, None], axis=1)
+            grad += np.sum(particular_solution_gradient(self._norms_part, self._angles_part, k, t * self.factor,
+                                                        self.poly.polar_angles) * ampl[None, indstart:indstop, None],
+                           axis=1)
             indstart, indstop = indstop, indstop + self.poly.nedges
 
         return grad  # shape (npoints, nfreq, 2
 
-    def simulate_freq(self, ind, adjoint=False, verbose=False): # todo: store boundary contributions to avoid recomputing
+    def _simulate_freq(self, ind, adjoint=False, verbose=False):
         """Assemble and solve the MFS system for the frequency of index ind, return the vector of corresponding
         amplitudes (sources and particular solutions)."""
         t1 = time.time()
@@ -241,10 +244,10 @@ class Simulation:
             self.ampl[:, ind] = 1
 
         # assemble the system matrix and rhs
-        A = self.boundary_operator(ind, self.room_bound, adjoint=adjoint)
+        A = self._boundary_operator_efficient(ind, adjoint=adjoint)
 
         # source contribution
-        b = - np.reshape(self.boundary_operator_source(ind, self.room_bound, adjoint=adjoint), [-1, 1])
+        b = - np.reshape(self._boundary_operator_efficient_src(ind, adjoint=adjoint), [-1, 1])
 
         try:
             res = np.linalg.lstsq(A, b, rcond=-1)[0]
@@ -259,6 +262,7 @@ class Simulation:
         return res.squeeze()
 
     def evaluate_error(self, freq_ind, adjoint=False):
+        """Checks if the solution satisfies the boundary condition at the error nodes."""
         mfs_val = self.boundary_operator(freq_ind, self.error_bound, aggregate=True, adjoint=adjoint)
         src_val = -self.boundary_operator_source(freq_ind, self.error_bound, adjoint=adjoint)
 
@@ -274,6 +278,10 @@ class Simulation:
         if ind is None:  # compute all frequencies if not specified
             ind = np.arange(1, self.nfreqs)
 
+        # precompute norms to reduce the number of calculations
+        self._precompute_diffs(self.room_bound.bound, self.vbound.bound)
+        self._precompute_diffs_src(self.room_bound.bound, adjoint)
+
         if adjoint:
             ampl = self.ampl_adj
         else:
@@ -281,11 +289,11 @@ class Simulation:
         t1 = time.time()
         if self.nworkers == 1:  # 1 frequency at a time
             for i in ind:
-                ampl[:, i] = self.simulate_freq(i, verbose=verbose, adjoint=adjoint)
+                ampl[:, i] = self._simulate_freq(i, verbose=verbose, adjoint=adjoint)
 
         elif self.nworkers > 1:
             with mp.get_context('fork').Pool(processes=self.nworkers) as pool:
-                partfunc = partial(self.simulate_freq, verbose=verbose, adjoint=adjoint)
+                partfunc = partial(self._simulate_freq, verbose=verbose, adjoint=adjoint)
                 ampl_pool = pool.map(partfunc, ind)
                 for i, ii in enumerate(ind):
                     ampl[:, ii] = ampl_pool[i]
@@ -295,20 +303,27 @@ class Simulation:
         if verbose:
             print("total simulation time : {} s".format(time.time()-t1))
 
-    def compute_grad(self, compute_points, ind=None, adjoint=False, verbose=False):
+    def compute_grad(self, points, ind=None, adjoint=False, verbose=False):
+        """Compute the gradient of the solution at the given points (shape (npoints, d)) at the given frequency.
+        Warning : should not be called at the vertices positions if the number of particular solutions is > 0."""
+        _, _, src_pos = self._select_sources(0, adjoint)
+
+        # precompute norms to reduce the number of calculations
+        self._precompute_diffs(points, self.vbound.bound), self._precompute_diffs_src(points, adjoint)
+
         t1 = time.time()
         if ind is None:  # compute all frequencies if not specified
             ind = np.arange(1, self.nfreqs)
 
         if self.nworkers == 1:
-            res_grad = np.zeros([len(compute_points), len(ind), 2], dtype=np.complex128)
+            res_grad = np.zeros([len(points), len(ind), 2], dtype=np.complex128)
 
             for k, i in enumerate(ind):
-                res_grad[:, k] = self.compute_grad_freq(compute_points, i, adjoint=adjoint)
+                res_grad[:, k] = self.compute_grad_freq(i, adjoint=adjoint)
         elif self.nworkers > 1:
             with mp.get_context('fork').Pool(processes=self.nworkers) as pool:
                 # local function to compute the solution at a given frequency, take only ind as argument
-                fun = partial(self.compute_grad_freq, compute_points, adjoint=adjoint)
+                fun = partial(self.compute_grad_freq, adjoint=adjoint)
                 res_grad = np.stack(pool.map(fun, ind), axis=1)
 
         t2 = time.time()
@@ -402,6 +417,30 @@ class Simulation:
             res = np.sum(res, axis=1)
         return res
 
+    def _boundary_operator_efficient(self, ind, adjoint=False):
+        """Compute the Robin operator at room_bound, using precomputed values for the differences and norms."""
+        k = self.wave_numbers[ind]
+        if adjoint:
+            beta, ampl = self.beta_adj, self.ampl_adj[:, ind]
+        else:
+            beta, ampl = self.beta, self.ampl[:, ind]
+
+        res = np.zeros((self.get_nbound(), self.get_nvirt()), dtype=complex)  # (nbound, nvbound + nedges*add_src)
+        res[:, :len(self.vbound)] = robin_operator_efficient(self.room_bound.normvec, self._diffs, self._norms,
+                                                             ampl[:len(self.vbound)], k, beta)
+
+        indstart, indstop = len(self.vbound), len(self.vbound) + self.poly.nedges
+        for t in range(self.add_src):  # particular solutions contributions
+            grad = particular_solution_gradient(self._norms_part, self._angles_part, k, t * self.factor,
+                                                self.poly.polar_angles)  # (np, nvertices, 2)
+            res[:, indstart:indstop] = ((np.sum(grad * self.room_bound.normvec[:, None, :], axis=-1) +  # np, nvertices
+                                         beta * k * 1j * particular_solution(self._norms_part, self._angles_part,
+                                                                             k, t * self.factor)) *
+                                        ampl[indstart:indstop].reshape(1, -1))
+            indstart, indstop = indstop, indstop + self.poly.nedges
+
+        return res
+
     def boundary_operator_source(self, ind, bound, adjoint=False):
         """Robin operator dp/dn + ik p applied at the source."""
         if adjoint:
@@ -411,6 +450,34 @@ class Simulation:
 
         return np.squeeze(np.sum(robin_operator(bound.bound, bound.normvec, ampl, src_pos.reshape((-1, 2)),
                                                 self.wave_numbers[ind], beta), axis=1))
+
+    def _boundary_operator_efficient_src(self, ind, adjoint=False):
+        """Compute the Robin operator at room_bound for the source term, using precomputed values for the differences
+        and norms."""
+        k = self.wave_numbers[ind]
+        if adjoint:
+            beta, ampl = self.beta_adj, self.src_ampl_adj[:, ind]
+        else:
+            beta, ampl = self.beta, self.src_ampl[:, ind]
+
+        return np.squeeze(np.sum(robin_operator_efficient(self.room_bound.normvec, self._diffs_src, self._norms_src,
+                                                          ampl, k, beta), axis=1))
+
+    def _precompute_diffs(self, p1, p2):
+        """Precompute the differences, norms and angles between p1 and p2 (p2 refers to sources). The angles are
+        computed relatively to p1."""
+        self._diffs = p1[:, None, :] - p2[None, :, :]  # (np, nsrc, 2)
+        self._norms = np.linalg.norm(self._diffs, axis=-1)  # (np, nsrc)
+        self._angles_part, _, self._norms_part = self.poly.compute_angles(p1)
+
+    def _precompute_diffs_src(self, points, adjoint):
+        """Precompute the differences, norms and angles between points and the sources."""
+        if adjoint:
+            pos_src = self.mic_pos
+        else:
+            pos_src = self.src_pos
+        self._diffs_src = points[:, None, :] - pos_src[None, :, :]
+        self._norms_src = np.linalg.norm(self._diffs_src, axis=-1)  # (np, nsrc)
 
     def plot_bound_values(self, ind, plot3d=True, show=True, adjoint=False):
         plot_nodes = self.error_bound.bound

@@ -52,6 +52,15 @@ def robin_operator(points, normvec, alpha, sourcesv, k, beta):
     return vcontr
 
 
+def robin_operator_efficient(normvec, diffs, norms, alpha, k, beta):
+    """Same as robin_operator but with precomputed diffs and norms."""
+    vcontr = ((np.sum(normvec[:, np.newaxis, :] * diffs, axis=-1) / norms *  # (np, 2)*(np, npv, 2) -> (npv,)
+               fundamental_solution_derivative(norms, k) + fundamental_solution(norms, k) *
+               beta * 1j * k) * np.reshape(alpha, (1, -1)))
+
+    return vcontr
+
+
 class SampledBoundary:
     """Class to sample a boundary and compute the normal vector at the sampled points."""
     def __init__(self, poly, sample_param, dx=0., min_dist=0.01, sample_type="separation"):

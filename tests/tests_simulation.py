@@ -13,7 +13,7 @@ class TestSimulation(unittest.TestCase):
 
         self.sim = Simulation(p.vertices, mic_pos=np.zeros([1, 2]), min_dist=0.005, dx=0.3, fs=256, nfreq=4,
                               pos_src=pos_src, nsrc_schedule=dict(method='per_wavelength', nsrc=30),
-                              error_thresh=1e-5, beta=.1, add_src=10, simulate=True, nworkers=1)
+                              error_thresh=1e-5, beta=.1, add_src=10, simulate=True, nworkers=1, max_tries=1)
         self.dx = 1e-4
         self.points = np.array([[-2.4, 0.4],
                                 [1., 4]])
@@ -31,7 +31,7 @@ class TestSimulation(unittest.TestCase):
         self.assertTrue(np.allclose(helmholtzian, np.zeros_like(helmholtzian), atol=1e-3))
         print("Helmholtzian 1:", helmholtzian)
 
-    def test_compute_grad1(self):
+    def test_compute_grad(self):
         point = self.points
 
         sim, dx = self.sim, 1e-4
@@ -40,6 +40,12 @@ class TestSimulation(unittest.TestCase):
                          (sim.compute(point + np.array([0, dx / 2])[None, :]) -
                           sim.compute(point - np.array([0, dx / 2])[None, :])) / dx], axis=-1)
         self.assertTrue(np.allclose(grad, sim.compute_grad(point), atol=1e-3))
+
+    def test_evaluate_error(self):  # check the error for the two frequencies
+        error1, error2 = self.sim.evaluate_error(1), self.sim.evaluate_error(2)
+        print("error at freqs {} and {}:  {}  and {}".format(self.sim.freqs[1], self.sim.freqs[2], error1, error2))
+        self.assertAlmostEqual(error1, 0., 5)
+        self.assertAlmostEqual(error2, 0., 5)
 
     def test_corner_grad(self):
         point = self.sim.poly.vertices
@@ -63,7 +69,7 @@ class TestSimulation2(unittest.TestCase):
         fs = 100.
         self.sim = Simulation(poly.vertices, mic_pos=np.zeros([1, 2]), min_dist=0.005, dx=0.3, fs=fs, nfreq=2,
                               pos_src=pos_src, nsrc_schedule=dict(method='per_wavelength', nsrc=30),
-                              error_thresh=1e-5, beta=0., add_src=3, simulate=True, nworkers=2)
+                              error_thresh=1e-5, beta=0., add_src=3, simulate=True, nworkers=2, max_tries=1)
         ntest, nmax = 50, 15000
         points = np.meshgrid(np.linspace(0.1, self.lx - 0.1, ntest), np.linspace(0.1, self.ly - 0.1, ntest))
         points = np.stack(points, axis=2).reshape(-1, 2)
@@ -117,9 +123,9 @@ class TestSimulationAdjoint(unittest.TestCase):
         self.sim = Simulation(p.vertices, mic_pos=np.array([[-4.4, 0.4], [-4.3, -4.2],
                                                             [-2.8, -2.2], [0, 4.2], [-0.3, 2.3]]),
                               min_dist=0.005, dx=0.3, fs=256, nfreq=4, pos_src=pos_src,
-                              nsrc_schedule=dict(method='per_wavelength', nsrc=30),
-                              error_thresh=1e-5, beta=.1, add_src=10,
-                              observations=np.arange(20).astype(float).reshape((5, 4)), nworkers=2, simulate=True)
+                              nsrc_schedule=dict(method='per_wavelength', nsrc=30),error_thresh=1e-5, beta=.1,
+                              add_src=10, observations=np.arange(20).astype(float).reshape((5, 4)), max_tries=1,
+                              nworkers=2, simulate=True)
         self.sim.simulate(adjoint=True)
         self.dx = 1e-4
         self.points = np.array([[-2.4, 0.4],
@@ -128,6 +134,12 @@ class TestSimulationAdjoint(unittest.TestCase):
     def test_src_ampl(self):  # test that the adjoint amplitudes are correct (skip freq 0 of observations)
         self.assertTrue(np.allclose(self.sim.src_ampl_adj[:, 1:],
                                     self.sim.obs[:, 1:] - self.sim.compute(self.sim.mic_pos, adjoint=False), atol=1e-5))
+
+    def test_evaluate_error(self):  # check the error for the two frequencies
+        error1, error2 = self.sim.evaluate_error(1, adjoint=True), self.sim.evaluate_error(2, adjoint=True)
+        print("error at freqs {} and {}:  {}  and {}".format(self.sim.freqs[1], self.sim.freqs[2], error1, error2))
+        self.assertAlmostEqual(error1, 0., 5)
+        self.assertAlmostEqual(error2, 0., 5)
 
     def test_compute_grad(self):
         point = self.points
@@ -140,6 +152,113 @@ class TestSimulationAdjoint(unittest.TestCase):
         self.assertTrue(np.allclose(grad, sim.compute_grad(point, adjoint=True), atol=1e-3))
 
     def test_corner_grad(self):
+        point = self.sim.poly.vertices
+
+        sim, dx = self.sim, 1e-6
+        grad = np.stack([(sim.compute(point + np.array([dx / 2, 0])[None, :], adjoint=True) -
+                          sim.compute(point - np.array([dx / 2, 0])[None, :], adjoint=True)) / dx,
+                         (sim.compute(point + np.array([0, dx / 2])[None, :], adjoint=True) -
+                          sim.compute(point - np.array([0, dx / 2])[None, :], adjoint=True)) / dx], axis=-1)
+
+        self.assertTrue(np.linalg.norm(grad - sim.compute_corner_grad(adjoint=True)), 5)
+
+
+class TestSimulationUpdatePoly(unittest.TestCase):
+    # update from a starting polygon to another, check that the values hold up
+    def setUp(self):
+        new_vert = np.array([[-6.875, -0.2150], [-4.570, -5.874], [-0.21811167, -0.1382],
+                             [3.646, 6.087], [-2.342, 5.689], [-4.321, 3.6]])
+        lx, ly = np.ptp(new_vert[:, 0]), np.ptp(new_vert[:, 1])
+        minx, miny = np.min(new_vert, axis=0)
+        vertices = np.array([[0, 0], [lx, 0.], [lx, ly], [0, ly]]) + np.array([[minx, miny]])
+        pos_src = np.array([[-2.4, 1.5]])
+        poly = Polygon(vertices)
+        self.sim = Simulation(poly.vertices,  mic_pos=np.array([[-4.4, 0.4], [-4.3, -4.2],
+                                                                [-2.8, -2.2], [0, 4.2], [-0.3, 2.3]]),
+                              min_dist=0.005, dx=0.3, fs=256, nfreq=4, pos_src=pos_src,
+                              nsrc_schedule=dict(method='per_wavelength', nsrc=30), error_thresh=1e-5, beta=0.,
+                              add_src=3, simulate=True, nworkers=2, max_tries=1)
+
+        self.assertTrue(self.sim.update_poly(new_vert))
+        self.sim.simulate()
+
+        self.points = np.array([[-2.4, 0.4],
+                                [1., 4]])
+
+    def test_compute(self):  # check that the helmhotzian is zero
+        point = self.points
+
+        sim, dx = self.sim, 1e-4
+        sim.src_ampl[:] = 0
+        laplacian = (sim.compute(point + np.array([[dx, 0]])) + sim.compute(point - np.array([[dx, 0]])) +
+                     sim.compute(point + np.array([[0, dx]])) + sim.compute(point - np.array([[0, dx]])) -
+                     4 * sim.compute(point)) / dx ** 2
+        helmholtzian = laplacian + sim.wave_numbers[1:] ** 2 * sim.compute(point)
+        # check that the array is close to 0
+        self.assertTrue(np.allclose(helmholtzian, np.zeros_like(helmholtzian), atol=1e-3))
+        print("Helmholtzian 1:", helmholtzian)
+
+    def test_compute_grad1(self):
+        point = self.points
+
+        sim, dx = self.sim, 1e-4
+        grad = np.stack([(sim.compute(point + np.array([dx / 2, 0])[None, :]) -
+                          sim.compute(point - np.array([dx / 2, 0])[None, :])) / dx,
+                         (sim.compute(point + np.array([0, dx / 2])[None, :]) -
+                          sim.compute(point - np.array([0, dx / 2])[None, :])) / dx], axis=-1)
+        self.assertTrue(np.allclose(grad, sim.compute_grad(point), atol=1e-3))
+
+    def test_evaluate_error(self):  # check the error for the two frequencies
+        error1, error2 = self.sim.evaluate_error(1), self.sim.evaluate_error(2)
+        print("error at freqs {} and {}:  {}  and {}".format(self.sim.freqs[1], self.sim.freqs[2], error1, error2))
+        self.assertAlmostEqual(error1, 0., 4)
+        self.assertAlmostEqual(error2, 0., 4)
+
+    def test_corner_grad(self):
+        point = self.sim.poly.vertices
+
+        sim, dx = self.sim, 1e-6
+        grad = np.stack([(sim.compute(point + np.array([dx / 2, 0])[None, :]) -
+                          sim.compute(point - np.array([dx / 2, 0])[None, :])) / dx,
+                         (sim.compute(point + np.array([0, dx / 2])[None, :]) -
+                          sim.compute(point - np.array([0, dx / 2])[None, :])) / dx], axis=-1)
+
+        self.assertTrue(np.linalg.norm(grad - sim.compute_corner_grad()), 5)
+
+    def test_compute_grad(self):
+        point = self.points
+
+        sim, dx = self.sim, 1e-4
+        grad = np.stack([(sim.compute(point + np.array([dx / 2, 0])[None, :]) -
+                          sim.compute(point - np.array([dx / 2, 0])[None, :])) / dx,
+                         (sim.compute(point + np.array([0, dx / 2])[None, :]) -
+                          sim.compute(point - np.array([0, dx / 2])[None, :])) / dx], axis=-1)
+        self.assertTrue(np.allclose(grad, sim.compute_grad(point), atol=1e-3))
+
+    def test_src_ampl(self):  # test that the adjoint amplitudes are correct (skip freq 0 of observations)
+        self.assertTrue(np.allclose(self.sim.src_ampl_adj[:, 1:],
+                                    self.sim.obs[:, 1:] - self.sim.compute(self.sim.mic_pos, adjoint=False), atol=1e-5))
+
+    def test_evaluate_error_adj(self):  # check the error for the two frequencies
+        self.sim.simulate(adjoint=True)
+        error1, error2 = self.sim.evaluate_error(1, adjoint=True), self.sim.evaluate_error(2, adjoint=True)
+        print("error at freqs {} and {}:  {}  and {}".format(self.sim.freqs[1], self.sim.freqs[2], error1, error2))
+        self.assertAlmostEqual(error1, 0., 4)
+        self.assertAlmostEqual(error2, 0., 4)
+
+    def test_compute_grad_adj(self):
+        self.sim.simulate(adjoint=True)
+        point = self.points
+
+        sim, dx = self.sim, 1e-4
+        grad = np.stack([(sim.compute(point + np.array([dx / 2, 0])[None, :], adjoint=True) -
+                          sim.compute(point - np.array([dx / 2, 0])[None, :], adjoint=True)) / dx,
+                         (sim.compute(point + np.array([0, dx / 2])[None, :], adjoint=True) -
+                          sim.compute(point - np.array([0, dx / 2])[None, :], adjoint=True)) / dx], axis=-1)
+        self.assertTrue(np.allclose(grad, sim.compute_grad(point, adjoint=True), atol=1e-3))
+
+    def test_corner_grad_adj(self):
+        self.sim.simulate(adjoint=True)
         point = self.sim.poly.vertices
 
         sim, dx = self.sim, 1e-6

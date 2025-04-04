@@ -13,8 +13,7 @@ class TestSimulation(unittest.TestCase):
 
         self.sim = Simulation(p.vertices, mic_pos=np.zeros([1, 2]), min_dist=0.005, dx=0.3, fs=256, nfreq=4,
                               pos_src=pos_src, nsrc_schedule=dict(method='per_wavelength', nsrc=30),
-                              error_thresh=1e-5, beta=.1, add_src=10)
-        self.sim.simulate(1)
+                              error_thresh=1e-5, beta=.1, add_src=10, simulate=True, nworkers=1)
         self.dx = 1e-4
         self.points = np.array([[-2.4, 0.4],
                                 [1., 4]])
@@ -64,7 +63,7 @@ class TestSimulation2(unittest.TestCase):
         fs = 100.
         self.sim = Simulation(poly.vertices, mic_pos=np.zeros([1, 2]), min_dist=0.005, dx=0.3, fs=fs, nfreq=2,
                               pos_src=pos_src, nsrc_schedule=dict(method='per_wavelength', nsrc=30),
-                              error_thresh=1e-5, beta=0., add_src=3)
+                              error_thresh=1e-5, beta=0., add_src=3, simulate=True, nworkers=2)
         ntest, nmax = 50, 15000
         points = np.meshgrid(np.linspace(0.1, self.lx - 0.1, ntest), np.linspace(0.1, self.ly - 0.1, ntest))
         points = np.stack(points, axis=2).reshape(-1, 2)
@@ -106,3 +105,47 @@ class TestSimulation2(unittest.TestCase):
                           sim.compute(point - np.array([0, dx / 2])[None, :])) / dx], axis=-1)
 
         self.assertTrue(np.linalg.norm(grad - sim.compute_corner_grad()), 10)
+
+
+class TestSimulationAdjoint(unittest.TestCase):
+    # test that the adjoint computation is done (no test against analytical values)
+    def setUp(self):
+        p = Polygon(np.array([[-6.87586954, -0.21505878], [-4.57026517, -5.8748617], [-0.21811167, -0.13829098],
+                              [3.64630988, 6.08748134], [-2.34224988, 5.68912892], [-4.32104665, 3.6823515]]))
+        pos_src = np.mean(p.vertices, axis=0).reshape((1, 2))
+
+        self.sim = Simulation(p.vertices, mic_pos=np.array([[-4.4, 0.4], [-4.3, -4.2],
+                                                            [-2.8, -2.2], [0, 4.2], [-0.3, 2.3]]),
+                              min_dist=0.005, dx=0.3, fs=256, nfreq=4, pos_src=pos_src,
+                              nsrc_schedule=dict(method='per_wavelength', nsrc=30),
+                              error_thresh=1e-5, beta=.1, add_src=10,
+                              observations=np.arange(20).astype(float).reshape((5, 4)), nworkers=2, simulate=True)
+        self.sim.simulate(adjoint=True)
+        self.dx = 1e-4
+        self.points = np.array([[-2.4, 0.4],
+                                [1., 4]])
+
+    def test_src_ampl(self):  # test that the adjoint amplitudes are correct (skip freq 0 of observations)
+        self.assertTrue(np.allclose(self.sim.src_ampl_adj[:, 1:],
+                                    self.sim.obs[:, 1:] - self.sim.compute(self.sim.mic_pos, adjoint=False), atol=1e-5))
+
+    def test_compute_grad(self):
+        point = self.points
+
+        sim, dx = self.sim, 1e-4
+        grad = np.stack([(sim.compute(point + np.array([dx / 2, 0])[None, :], adjoint=True) -
+                          sim.compute(point - np.array([dx / 2, 0])[None, :], adjoint=True)) / dx,
+                         (sim.compute(point + np.array([0, dx / 2])[None, :], adjoint=True) -
+                          sim.compute(point - np.array([0, dx / 2])[None, :], adjoint=True)) / dx], axis=-1)
+        self.assertTrue(np.allclose(grad, sim.compute_grad(point, adjoint=True), atol=1e-3))
+
+    def test_corner_grad(self):
+        point = self.sim.poly.vertices
+
+        sim, dx = self.sim, 1e-6
+        grad = np.stack([(sim.compute(point + np.array([dx / 2, 0])[None, :], adjoint=True) -
+                          sim.compute(point - np.array([dx / 2, 0])[None, :], adjoint=True)) / dx,
+                         (sim.compute(point + np.array([0, dx / 2])[None, :], adjoint=True) -
+                          sim.compute(point - np.array([0, dx / 2])[None, :], adjoint=True)) / dx], axis=-1)
+
+        self.assertTrue(np.linalg.norm(grad - sim.compute_corner_grad(adjoint=True)), 5)

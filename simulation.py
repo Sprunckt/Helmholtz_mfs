@@ -331,9 +331,9 @@ class Simulation:
             print("total computation time : {} s".format(t2 - t1))
 
         return res_grad
-    
-    def compute_corner_grad_freq(self, ind, adjoint=False):  # compute derivative at each corner, assumes each angle < pi
-        """Return the gradient of the solution at each corner, taking the limit for particular solutions"""
+
+    def compute_corner_grad_freq(self, ind, adjoint=False):
+        """Return the gradient of the solution at each corner"""
         k = self.wave_numbers[ind]
         ampl, ampl_src, src_pos = self._select_sources(ind, adjoint)
         nsrc = len(self.vbound)
@@ -392,7 +392,7 @@ class Simulation:
                 self.compute_corner_grad(freq_ind, adjoint=adjoint))
 
     def boundary_operator(self, ind, bound, aggregate=False, adjoint=False):
-        """Compute the Robin operator dp/dn + ik p on the given boundary at the given frequency indices for the 
+        """Compute the Robin operator dp/dn + ik p on the given boundary at the given frequency indices for the
         approximated solution, WITHOUT the source contribution (which is computed using boundary_operator_source)."""
         k = self.wave_numbers[ind]
         if adjoint:
@@ -547,4 +547,30 @@ class Simulation:
 
 
 if __name__ == '__main__':
-    pass
+    # create a triangle with an angle alpha at the origin
+    alpha, alpha_rot = np.pi*0.95,  np.pi*0.5
+    vert = np.array([[0, 0.], [1., 0.], [0,1.],[np.cos(alpha), np.sin(alpha)]])
+    # apply rotation
+    rot = np.array([[np.cos(alpha_rot), -np.sin(alpha_rot)],
+                    [np.sin(alpha_rot), np.cos(alpha_rot)]])
+    vert = np.dot(vert, rot)
+    p = Polygon(vert)
+    src_angle = alpha * np.sqrt(2)/4
+    pos_src = np.array([[np.cos(src_angle), np.sin(src_angle)]]) * np.sqrt(3)/4.
+    mic_pos = np.array([[np.cos(np.pi/np.sqrt(5)), np.sin(np.pi/np.sqrt(5))]])/2
+    pos_src, mic_pos = np.dot(pos_src, rot), np.dot(mic_pos, rot)
+    plt.plot(p.vertices[:, 0], p.vertices[:, 1], 'o-')
+    plt.plot(pos_src[0, 0], pos_src[0,1], 'o', color='red')
+    plt.plot(mic_pos[0, 0], mic_pos[0, 1], 'o', color='green')
+    plt.axis('equal')
+    # plt.plot(points[:, 0], points[:, 1], 'x')
+
+    plt.show()
+    pos_src = np.mean(p.vertices, axis=0).reshape((1, 2))
+
+    sim = Simulation(p.vertices, mic_pos=mic_pos, min_dist=0.005, dx=0.3, fs=256, nfreq=4,
+                          pos_src=pos_src, nsrc_schedule=dict(method='per_wavelength', nsrc=30),
+                          error_thresh=1e-5, beta=.1, add_src=10, observations=np.ones([1, 4]))
+    sim.simulate()
+    print(sim.poly.angles)
+    print(sim.compute_grad(sim.mic_pos))

@@ -4,7 +4,6 @@ from utils import Polygon
 import numpy as np
 import matplotlib.pyplot as plt
 
-
 class TestSimulation(unittest.TestCase):
     def setUp(self):
         p = Polygon(np.array([[-6.87586954, -0.21505878], [-4.57026517, -5.8748617], [-0.21811167, -0.13829098],
@@ -268,3 +267,64 @@ class TestSimulationUpdatePoly(unittest.TestCase):
                           sim.compute(point - np.array([0, dx / 2])[None, :], adjoint=True)) / dx], axis=-1)
 
         self.assertTrue(np.linalg.norm(grad - sim.compute_corner_grad(adjoint=True)), 5)
+
+
+class TestSimulationLargeAngle(unittest.TestCase):
+    def setUp(self):
+        alpha = np.pi*0.95
+        vert = np.array([[0, 0.], [1., 0.], [0, 1.], [np.cos(alpha), np.sin(alpha)]])
+        p = Polygon(vert)
+        src_angle = alpha * np.sqrt(2) / 4
+        pos_src = np.array([[np.cos(src_angle), np.sin(src_angle)]]) * np.sqrt(3) / 4.
+        mic_pos = np.array([[np.cos(np.pi / np.sqrt(5)), np.sin(np.pi / np.sqrt(5))]]) / 2
+        self.sim = Simulation(p.vertices, mic_pos=mic_pos.reshape((1, 2)),
+                         min_dist=0.005, dx=0.3, fs=256, nfreq=4,
+                         pos_src=pos_src, nsrc_schedule=dict(method='per_wavelength', nsrc=50),
+                         error_thresh=1e-5, beta=.1, add_src=5, observations=np.ones([1, 4]), simulate=True)
+        self.dx = 1e-4
+        self.points = self.sim.mic_pos
+        print(np.degrees(self.sim.poly.angles))
+
+    def test_compute(self):  # check that the helmhotzian is zero
+        point = self.points
+
+        sim, dx = self.sim, 1e-3
+        sim.src_ampl[:] = 0
+        laplacian = (sim.compute(point + np.array([[dx, 0]])) + sim.compute(point - np.array([[dx, 0]])) +
+                     sim.compute(point + np.array([[0, dx]])) + sim.compute(point - np.array([[0, dx]])) -
+                     4 * sim.compute(point)) / dx ** 2
+        helmholtzian = laplacian + sim.wave_numbers[1:]**2*sim.compute(point)
+        # check that the array is close to 0
+        print(helmholtzian)
+        self.assertTrue(np.allclose(helmholtzian, np.zeros_like(helmholtzian), atol=1e-3))
+        print("Helmholtzian 1:", helmholtzian)
+
+    def test_compute_grad(self):
+        point = self.points
+
+        sim, dx = self.sim, 1e-4
+        grad = np.stack([(sim.compute(point + np.array([dx / 2, 0])[None, :]) -
+                          sim.compute(point - np.array([dx / 2, 0])[None, :])) / dx,
+                         (sim.compute(point + np.array([0, dx / 2])[None, :]) -
+                          sim.compute(point - np.array([0, dx / 2])[None, :])) / dx], axis=-1)
+        self.assertTrue(np.allclose(grad, sim.compute_grad(point), atol=1e-5))
+
+    def test_evaluate_error(self):  # check the error for the two frequencies
+        error1, error2 = self.sim.evaluate_error(1), self.sim.evaluate_error(2)
+        print("error at freqs {} and {}:  {}  and {}".format(self.sim.freqs[1], self.sim.freqs[2], error1, error2))
+        self.assertAlmostEqual(error1, 0., 5)
+        self.assertAlmostEqual(error2, 0., 5)
+
+    # def test_corner_grad(self):
+    #     point = self.sim.poly.vertices
+    #
+    #     sim, dx = self.sim, 1e-8
+    #     grad = np.stack([(sim.compute(point + np.array([dx / 2, 0])[None, :]) -
+    #                       sim.compute(point - np.array([dx / 2, 0])[None, :])) / dx,
+    #                      (sim.compute(point + np.array([0, dx / 2])[None, :]) -
+    #                       sim.compute(point - np.array([0, dx / 2])[None, :])) / dx], axis=-1)
+    #     #print(grad- sim.compute_corner_grad(), grad.shape, grad)
+    #     print(np.linalg.norm(grad- sim.compute_corner_grad(), axis=-1))
+    #     print("c", np.linalg.norm(sim.compute_corner_grad(), axis=-1))
+    #     print("g", np.linalg.norm(grad, axis=-1))
+    #     self.assertAlmostEqual(np.linalg.norm(grad[0] - sim.compute_corner_grad()[0]), 0, 5)

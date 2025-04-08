@@ -4,6 +4,7 @@ from utils import Polygon
 import numpy as np
 import matplotlib.pyplot as plt
 
+
 class TestSimulation(unittest.TestCase):
     def setUp(self):
         p = Polygon(np.array([[-6.87586954, -0.21505878], [-4.57026517, -5.8748617], [-0.21811167, -0.13829098],

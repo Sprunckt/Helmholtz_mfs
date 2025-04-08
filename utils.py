@@ -151,9 +151,6 @@ class Polygon:
     def get_normal(self, edge_id):
         return self.normals[edge_id]
 
-    def get_params(self):
-        return self.vertices
-
     def compute_angles(self, points):
         """Compute polar angles of points with respect to the vertices of the polygon, using the next edge (in
         trigonometric order) as polar axis. Return angles and vectors from vertices to points."""

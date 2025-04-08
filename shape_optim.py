@@ -1,8 +1,7 @@
 from simulation import Simulation
 import numpy as np
 import time
-import json
-from utils import rotate, mod2pi, random_poly, array_to_list, dict_to_json
+from utils import random_poly, dict_to_json
 
 
 def cost_check_stop(log, patience, tol):
@@ -21,63 +20,48 @@ def vert_check_stop(log, patience, tol):
 
 class ShapeOptimizer:
     def __init__(self, init_vertices: np.ndarray, fs: float, nfreq: int, source_pos: np.ndarray, mic_pos: np.ndarray,
-                 measurements: np.ndarray, dx: float, nprocess=1, n_int=1000, parametrization="half-planes",
+                 measurements: np.ndarray, dx: float, nworkers=1, n_int=1000,
                  sim_kwargs=None, src_ampl=None, verbose=False, min_length=0.25, min_edges=None, max_angle=3.):
-        self.parametrization = parametrization
 
-        if parametrization == "half-planes":
-            origin = np.reshape(source_pos.copy(), -1)
-        else:
-            origin = None
-        self.min_length, self.max_angle = min_length, max_angle
-        if sim_kwargs is None:
-            sim_kwargs = {"boundsep": 0.05}
-        self.sim_p = Simulation(vertices=init_vertices, fs=fs, nfreq=nfreq, dx=dx, origin=origin,
-                                pos_src=source_pos, src_ampl=src_ampl, **sim_kwargs)
-        sim_kwargs_q = sim_kwargs.copy()
-        sim_kwargs_q["beta"] = - np.asarray(sim_kwargs_q["beta"])  # todo: handle callable case
-        self.sim_q = Simulation(vertices=init_vertices, fs=fs, nfreq=nfreq, dx=dx, pos_src=mic_pos,
-                                origin=origin, **sim_kwargs_q)
-        self.source_pos = source_pos
-        self.mic_pos = mic_pos
-        self.nmics = len(mic_pos)
-        self.nprocess = nprocess
-        self.observations = measurements  # shape len(freqs)
-        self.diffs = None  # difference between observations and simulated values, only active freqs and mics
-        self.n_int = n_int  # number of quadrature points on the boundary
-
-        self.quad_points, self.quad_ids, self.quad_nodes = None, None, None
-        self.quad_intervals = np.zeros([self.sim_p.poly.nedges, 2], dtype=int)
-        self._update_quadrature_points()
 
         self.p_grads, self.q_grads, self.p_values, self.q_values = None, None, None, None
         self.corner_values = None
-        self.verbose = verbose
+
+        self.min_length, self.max_angle = min_length, max_angle
+        origin = np.mean(init_vertices, axis=0)
+        self.sim = Simulation(vertices=init_vertices, fs=fs, nfreq=nfreq, dx=dx, origin=origin, nworkers=nworkers,
+                              observations=measurements, pos_src=source_pos, src_ampl=src_ampl, mic_pos=mic_pos,
+                              simulate=True, **sim_kwargs)
+        self.n_int = n_int  # number of quadrature points on the boundary
+        self.quad_points, self.quad_ids, self.quad_nodes = None, None, None
+        self.quad_intervals = np.zeros([self.sim.poly.nedges, 2], dtype=int)
+        self._update_quadrature_points()
 
         # active frequency indices used in the cost function/gradient computations
-        self._active_ind = np.arange(1, self.sim_p.nfreqs)
-        self._possible_ind = np.arange(1, self.sim_p.nfreqs)
-        self._nactive = self.sim_p.nfreqs - 1
-        self.max_freq = self.sim_p.freqs[-1]
+        self._active_ind = np.arange(1, self.sim.nfreqs)
+        self._possible_ind = np.arange(1, self.sim.nfreqs)
+        self._nactive = self.sim.nfreqs - 1
+        self.max_freq = self.sim.freqs[-1]
         self.min_freq = 0.
         self.min_iter_freq, self.target_iter_freq = 0, 0
 
-        self._active_mic_ind = np.arange(self.nmics)
-        self._nactive_mic = self.nmics
+        self._update_state(simulate=False)  # update corner values
+        self.nmics = len(mic_pos)
+        self.diffs = None  # difference between observations and simulated values, only active freqs and mics
+        self.verbose = verbose
         
-        self.nfreqs = nfreq
         if min_edges is None:
-            self.nedges = self.sim_p.poly.nedges
+            self.nedges = self.sim.poly.nedges
         else:
             self.nedges = min_edges
         self._generator = np.random.default_rng()
+        self._update_adjoint()
 
     def get_params(self):
-        return self.sim_p.poly.get_params(self.parametrization).copy()
+        return self.sim.poly.vertices.copy()
 
     def _penalize_grad(self, in_constraints, eps):
-        """Return the gradient of cost function penalization and the indices of the affected microphones. Only
-        implemented for vertices parametrization !"""
+        """Return the gradient of cost function penalization and the indices of the affected microphones."""
         edge_dist = self.sim_p.poly.get_edge_distances(in_constraints)  # shape (nconstr, nedges)
         penal_ind = edge_dist >= self.sim_p.poly.distances[None, :]  # same shape
         ind_out = np.where(penal_ind)
@@ -171,10 +155,10 @@ class ShapeOptimizer:
         return new_cost, grad, init_decrease
 
     def _update_quadrature_points(self):
-        self.quad_points, _, self.quad_ids, self.quad_nodes = self.sim_p.poly.sample(self.n_int, return_nodes=True,
-                                                                                     min_dist=0.)
+        self.quad_points, _, self.quad_ids, self.quad_nodes = self.sim.poly.sample(self.n_int, return_nodes=True,
+                                                                                   min_dist=0.)
         interv = np.where(np.diff(self.quad_ids) != 0)[0]
-        self.quad_intervals = np.zeros([self.sim_p.poly.nedges, 2], dtype=int)
+        self.quad_intervals = np.zeros([self.sim.poly.nedges, 2], dtype=int)
         self.quad_intervals[0], self.quad_intervals[-1] = [0, interv[0]], [interv[-1] + 1, len(self.quad_ids) - 1]
         self.quad_intervals[1:-1] = np.stack([interv[:-1] + 1, interv[1:]], axis=1)
 
@@ -248,9 +232,9 @@ class ShapeOptimizer:
             log = old_log
 
         if self.parametrization == "half-planes":  # the origin is set at the source position
-            in_constraints = self.mic_pos
+            in_constraints = self.sim.mic_pos
         else:  # in that case also check the source position
-            in_constraints = np.concatenate([self.mic_pos, self.source_pos], axis=0)
+            in_constraints = np.concatenate([self.sim.mic_pos, self.sim.src_pos], axis=0)
 
         if schedule is None:  # default schedule : no batch, start at maximum frequency
             schedule = dict(mic_batch_size=0, freq_batch_size=0, max_freqs=[self.max_freq], min_iter_freq=[min_iter],
@@ -374,179 +358,106 @@ class ShapeOptimizer:
         if save_path is not None:
             dict_to_json(log, save_path)
 
-        return self.sim_p.poly.vertices, log, cost
+        return self.sim.poly.vertices, log, cost
 
-    def _update_obs(self):
-        mic_val = self.sim_p.compute(self.mic_pos[self._active_mic_ind], self.nprocess, freq_ind=self._active_ind)
-        self.diffs = mic_val - self.observations[self._active_mic_ind[:, np.newaxis], self._active_ind[np.newaxis, :]]
+    def _update_state(self, simulate=True):
+        if simulate:
+            self.sim.simulate(self._active_ind, adjoint=False, verbose=False)
 
-    def _update_state(self):
-        self.sim_p.set_freq_ind_to_simulate(self._active_ind)
-        self.sim_p.simulate(self.nprocess, verbose=False)
+        self.p_values = self.sim.compute(self.quad_points, self._active_ind, adjoint=False)
+        self.cornerval_p = self.sim.compute_corner_values(self._active_ind, adjoint=False)
 
-        self._update_obs()
-
-        self.p_values = self.sim_p.compute(self.quad_points, self.nprocess, freq_ind=self._active_ind, use_src=True)
-
-        self.cornerval_p = self.sim_p.compute_corner_values(use_src=True, freq_ind=self._active_ind)
-
-        nvert = len(self.sim_p.poly.vertices)
+        nvert = len(self.sim.poly.vertices)
         self.p_grads = np.zeros((self.n_int, self._nactive, 2), dtype=complex)
         for i in range(nvert):  # compute gradients on each edge
             start_ind, end_ind = self.quad_intervals[i]
-            self.p_grads[start_ind+1: end_ind] = self.sim_p.compute_grad(self.quad_points[start_ind+1: end_ind],
-                                                                         self.nprocess, freq_ind=self._active_ind)
-            self.p_grads[start_ind] = self.cornerval_p[1][i, :, 1, :]
-            self.p_grads[end_ind] = self.cornerval_p[1][(i + 1) % self.sim_p.poly.nedges, :, 0, :]
+            self.p_grads[start_ind+1: end_ind] = self.sim.compute_grad(self.quad_points[start_ind+1: end_ind],
+                                                                       self._active_ind, adjoint=False)
+            self.p_grads[start_ind] = self.cornerval_p[1][i, :, :]
+            self.p_grads[end_ind] = self.cornerval_p[1][(i + 1) % self.sim.poly.nedges, :, :]
 
     def _update_adjoint(self):
-        self.sim_q.set_freq_ind_to_simulate(self._active_ind)
-        self.sim_q.src_ampl[:, :] = 0.  # reset source amplitudes
-        # update source amplitudes with observation errors, only consider active mics and freqs
-        self.sim_q.src_ampl[self._active_mic_ind[:, np.newaxis], self._active_ind[np.newaxis, :]] = - self.diffs
-        self.sim_q.simulate(self.nprocess, verbose=False)
-        self.q_values = self.sim_q.compute(self.quad_points, self.nprocess, freq_ind=self._active_ind)
+        self.sim.simulate(self._active_ind, adjoint=True, verbose=False)
+        self.q_values = self.sim.compute(self.quad_points, self._active_ind, adjoint=True)
 
-        cornerval_q = self.sim_q.compute_corner_values(freq_ind=self._active_ind)
+        cornerval_q = self.sim.compute_corner_values(freq_ind=self._active_ind, adjoint=True)
 
         self.q_grads = np.zeros((self.n_int, self._nactive, 2), dtype=complex)
-        self.corner_values = np.zeros((self.sim_p.poly.nedges, self._nactive))
-        for i in range(len(self.sim_p.poly.vertices)):  # compute gradients on each edge
+        self.corner_values = np.zeros((self.sim.poly.nedges, self._nactive))
+        for i in range(len(self.sim.poly.vertices)):  # compute gradients on each edge
             start_ind, end_ind = self.quad_intervals[i]
 
-            self.q_grads[start_ind + 1:end_ind] = self.sim_q.compute_grad(self.quad_points[start_ind + 1:end_ind],
-                                                                          self.nprocess, freq_ind=self._active_ind)
-            self.q_grads[start_ind] = cornerval_q[1][i, :, 1, :]
-            self.q_grads[end_ind] = cornerval_q[1][(i + 1) % self.sim_p.poly.nedges, :, 0, :]
+            self.q_grads[start_ind + 1:end_ind] = self.sim.compute_grad(self.quad_points[start_ind + 1:end_ind],
+                                                                        self._active_ind, adjoint=True)
+            self.q_grads[start_ind] = cornerval_q[1][i, :, :]
+            self.q_grads[end_ind] = cornerval_q[1][(i + 1) % self.sim.poly.nedges, :, :]
 
-            self.corner_values[i] = np.real(cornerval_q[0][i].conj() * np.sum(self.cornerval_p[1][i, :, 0, :] *
-                                                                              self.sim_p.poly.normals[i - 1],
+            self.corner_values[i] = np.real(cornerval_q[0][i].conj() * np.sum(self.cornerval_p[1][i, :, :] *
+                                                                              self.sim.poly.normals[i - 1],
                                                                               axis=-1))  # dn p * q.conj
 
     def update_sim(self, new_params=None, update_state=True, update_adjoint=True,
-                   bounds=(-15, 15), check_in=None, convex_proj=False, allow_reduce=3):
+                   bounds=(-15, 15), check_in=None, convex_proj=False, allow_reduce=3, verbose=False):
         if new_params is not None:
-            success = self.sim_p.update_poly(new_params, parametrization=self.parametrization, convex_proj=convex_proj,
-                                             bounds=bounds, check_in=check_in, min_length=self.min_length, max_angle=self.max_angle)
-            self.sim_q.update_poly(new_params, parametrization=self.parametrization, convex_proj=convex_proj,
-                                   bounds=bounds, check_in=check_in, min_length=self.min_length, max_angle=self.max_angle)
+            success = self.sim.update_poly(new_params, convex_proj=convex_proj, bounds=bounds, check_in=check_in,
+                                           min_length=self.min_length, max_angle=self.max_angle)
             
-            if self.sim_p.poly.nedges < allow_reduce: 
+            if self.sim.poly.nedges < allow_reduce:
                 success = False
             if success:
-                if self.sim_p.poly.nedges != len(self.sim_p.mfs.beta):   # todo: update in case of different betas
-                    self.sim_p.mfs.beta = np.array([self.sim_p.mfs.beta[0] for _ in range(self.sim_p.poly.nedges)])
-                    self.sim_q.mfs.beta = - self.sim_p.mfs.beta
                 self._update_quadrature_points()
         else:
             success = True
 
         if success:
-            print("Poly updated:", self.sim_p.poly.vertices, self.sim_p.poly.angles, flush=True)
+            if verbose:
+                print("Poly updated:", self.sim.poly.vertices, self.sim.poly.angles, flush=True)
             if update_state:
                 self._update_state()
             if update_adjoint:
                 self._update_adjoint()
         return success
-        
-    def evaluate_directional_derivative(self, V, V_corners):
-        # shape derivative in direction of the vector field V (shape (n_int, 2))
-        normals = self.sim_p.poly.normals[self.quad_ids]
-        normal_term = np.sum(V*normals, axis=1)
-        beta_val = self.sim_p.mfs.beta[self.quad_ids]
-        vals = normal_term * (np.sum(np.real(self.p_grads * self.q_grads.conj()), axis=(1, 2)) -
-                              np.sum(np.real(self.sim_p.wave_numbers[np.newaxis, self._active_ind] ** 2 *
-                                             self.p_values * self.q_values.conj()), axis=1) +
-                              2*np.sum(np.real(beta_val*beta_val.conj())[:, np.newaxis] *
-                                       self.sim_p.wave_numbers[np.newaxis, self._active_ind]**2 *
-                                       np.real(self.p_values * self.q_values.conj()), axis=1))
-
-        # integrate vals
-        vals = self.sim_p.poly.integrate(vals, self.quad_nodes, self.quad_ids)
-        renormed_edges = self.sim_p.poly.edges / np.linalg.norm(self.sim_p.poly.edges, axis=1)[:, np.newaxis]
-        for i in range(self.sim_p.poly.nedges):
-            vals += np.sum(np.sum(V_corners[i] * (renormed_edges[i] - renormed_edges[i-1])) *
-                           np.real(self.corner_values[i, :]))
-
-        return vals / self._nactive_mic / self._nactive
 
     def partial_derivative(self, i):
         # generate a function psi_i on edges i, i-1 such that psi_i(i) = 1, psi_i(i-1) = 0 = psi_i(i+1)
-        psi = [np.linspace(0, 1, len(self.quad_nodes[self.quad_ids == (i-1) % self.sim_p.poly.nedges])),
+        psi = [np.linspace(0, 1, len(self.quad_nodes[self.quad_ids == (i-1) % self.sim.poly.nedges])),
                np.linspace(1, 0, len(self.quad_nodes[self.quad_ids == i]))]
-        ind = [(i-1) % self.sim_p.poly.nedges, i]
-        normals = [self.sim_p.poly.normals[i-1], self.sim_p.poly.normals[i]]
+        ind = [(i-1) % self.sim.poly.nedges, i]
+        normals = [self.sim.poly.normals[i-1], self.sim.poly.normals[i]]
         res = np.zeros(2)
-        beta_val_tot = self.sim_p.mfs.beta[self.quad_ids]
         for j in range(2):
             quad_ids = np.where(self.quad_ids == ind[j])[0]
             p_val, q_val = self.p_values[quad_ids], self.q_values[quad_ids]
             p_grad, q_grad = self.p_grads[quad_ids], self.q_grads[quad_ids]
             normal = normals[j]
-            beta_val = beta_val_tot[quad_ids]
             vals = (np.sum(np.real(p_grad * q_grad.conj()), axis=(1, 2)) -
-                    np.sum(np.real(self.sim_p.wave_numbers[np.newaxis, self._active_ind]**2 * p_val * q_val.conj()),
+                    np.sum(np.real(self.sim.wave_numbers[np.newaxis, self._active_ind]**2 * p_val * q_val.conj()),
                            axis=1) +
-                    2 * np.sum(np.real(beta_val * beta_val.conj())[:, np.newaxis] *
-                               self.sim_p.wave_numbers[np.newaxis, self._active_ind]**2 *
+                    2 * np.sum(np.real(self.sim.beta * np.conj(self.sim.beta)) *
+                               self.sim.wave_numbers[np.newaxis, self._active_ind]**2 *
                                np.real(p_val * q_val.conj()), axis=1))*psi[j]
-            res = res + normal*self.sim_p.poly.integrate_edge(vals, self.quad_nodes[quad_ids], ind[j])
-        renormed_edge1 = self.sim_p.poly.edges[i] / np.linalg.norm(self.sim_p.poly.edges[i])
-        renormed_edge2 = self.sim_p.poly.edges[i-1] / np.linalg.norm(self.sim_p.poly.edges[i-1])
+            res = res + normal*self.sim.poly.integrate_edge(vals, self.quad_nodes[quad_ids], ind[j])
+        renormed_edge1 = self.sim.poly.edges[i] / np.linalg.norm(self.sim.poly.edges[i])
+        renormed_edge2 = self.sim.poly.edges[i-1] / np.linalg.norm(self.sim.poly.edges[i-1])
 
         res = res + (renormed_edge1 - renormed_edge2)*np.sum(np.real(self.corner_values[i, :]))
-        return res / self._nactive_mic / self._nactive
-
-    def partial_derivative_proji(self, i):
-        V, V_corners = np.zeros((self.n_int, 2)), np.zeros((self.sim_p.poly.nedges, 2))
-        part_der = np.zeros(2)
-        quad_ids = np.where(self.quad_ids == i)[0]
-        nquad, indnext = len(quad_ids), (i+1) % self.sim_p.poly.nedges
-        px, origin = self.sim_p.poly.projs[i], self.sim_p.poly.origin
-        edgei, edgeip = self.sim_p.poly.edges[i-1], self.sim_p.poly.edges[indnext]
-        edgei, edgeip = edgei / np.linalg.norm(edgei), edgeip / np.linalg.norm(edgeip)
-        dot_prodi, dot_prodip = np.sum(edgei*(px - origin)), np.sum(edgeip*(px - origin))
-        vi, vip = self.sim_p.poly.vertices[i], self.sim_p.poly.vertices[indnext]
-        dprod_num, dprod_nump = np.sum((px-origin)*(px-vi)), np.sum((px-origin)*(px-vip))
-        epsix = (2*px[0] - origin[0] - vi[0])/dot_prodi - edgei[0]*dprod_num/dot_prodi**2
-        epsiy = (2*px[1] - origin[1] - vi[1])/dot_prodi - edgei[1]*dprod_num/dot_prodi**2
-        epsixp = (2*px[0] - origin[0] - vip[0])/dot_prodip - edgeip[0]*dprod_nump/dot_prodip**2
-        epsiyp = (2*px[1] - origin[1] - vip[1])/dot_prodip - edgeip[1]*dprod_nump/dot_prodip**2
-        alpha = np.linspace(1, 0, nquad)  # linear mapping for edge parametrization
-        V[quad_ids] = alpha[:, np.newaxis]*epsix*edgei + (1-alpha)[:, np.newaxis]*epsixp*edgeip
-        V_corners[i], V_corners[indnext] = epsix * edgei, epsixp * edgeip
-        part_der[0] = self.evaluate_directional_derivative(V, V_corners)
-
-        V[quad_ids] = alpha[:, np.newaxis]*epsiy*edgei + (1-alpha)[:, np.newaxis]*epsiyp*edgeip
-        V_corners[i], V_corners[indnext] = epsiy * edgei, epsiyp * edgeip
-        part_der[1] = self.evaluate_directional_derivative(V, V_corners)
-
-        return part_der  # no normalization as it is done in evaluate_directional_derivative
+        return res / self.nmics / self._nactive
 
     def cost_fun(self):
-        return 0.5*np.sum(np.real(self.diffs * self.diffs.conj())) / self._nactive_mic / self._nactive
+        return 0.5*np.sum(np.real(self.sim.src_ampl_adj *  # contains the diffs between observations and state values
+                                  self.sim.src_ampl_adj.conj())) / self.nmics / self._nactive
 
     def cost_fun_full(self):
         return 0.5*np.real(self.diffs*self.diffs.conj())
     
     def get_signals(self):
-        return self.sim_p.compute(self.mic_pos[self._active_mic_ind], self.nprocess, freq_ind=self._active_ind)
-
-    def _get_gradfun(self):
-        if self.parametrization == "half-planes":
-            gradfun = self.partial_derivative_proji
-        elif self.parametrization == "vertices":
-            gradfun = self.partial_derivative
-        else:
-            raise ValueError("unknown parametrization, accepted values:, 'half-planes', 'vertices'")
-        return gradfun 
+        return self.sim_p.compute(self.sim.mic_pos[self._active_mic_ind], self.nprocess, freq_ind=self._active_ind)
     
     def get_gradient(self):
-        gradfun = self._get_gradfun()
         grad = np.zeros((len(self.sim_p.poly.vertices), 2))
 
         for i in range(len(self.sim_p.poly.vertices)):
-            grad[i] = gradfun(i)
+            grad[i] =  self.partial_derivative(i)
         return grad 
 
     def random_multiscale_fit(self, bounds, n_steps_final, n_steps_ini, max_freq_ini, min_freq_ini, 
@@ -569,7 +480,7 @@ class ShapeOptimizer:
         tstart = time.time()
         if n_edges is None:
             n_edges = self.sim_p.poly.nedges
-        in_constraints = np.concatenate([self.mic_pos, self.source_pos], axis=0)
+        in_constraints = np.concatenate([self.sim.mic_pos, self.sim.src_pos], axis=0)
         max_freqs_copy = fit_params["schedule"]["max_freqs"].copy()
         min_freqs_copy = fit_params["schedule"]["min_freqs"].copy()
         fit_params["niter"] = n_steps_ini
@@ -670,3 +581,86 @@ class ShapeOptimizer:
 
 def _step_update_params(params, step, grad):
     return params - step * grad
+
+
+if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+    from utils import Polygon
+    nfreq = 2
+    freqmax = 256
+    dx = 0.3
+    beta = 0.1
+    v = np.array([0.5, 1.])#np.array([1.231231, 0.8785678])
+    v /= np.linalg.norm(v)
+    lxinit, ly = 2., 2.4876
+    h = 0.1
+    poly_mic = Polygon(np.array([[0.2, 0.2], [lxinit - 0.2, 0.2], [lxinit - 0.2, ly - 0.2], [0.2, ly - 0.2]]))
+    nmic = 32
+
+    mic_pos = poly_mic.sample(nmic, min_dist=0.1)[0]
+    # mic_pos = np.array([[0.5,0.25]])
+
+    # plt.plot(poly_mic.vertices[:, 0], poly_mic.vertices[:, 1])
+    # plt.plot(mic_pos[:, 0], mic_pos[:, 1], 'o')
+    # plt.show()
+    pos_src = np.array([[0.5, ly / 2]])
+
+    ntest = 5
+    jval = np.zeros((5, ntest), dtype=float)
+    djval = np.zeros((4, ntest, 2), dtype=float)
+    init_vert = np.array([[0., 0], [lxinit, 0], [lxinit, ly], [0., ly]])
+
+    sim = Simulation(init_vert, freqmax, nfreq,
+                         pos_src=pos_src, mic_pos=mic_pos,
+                         nworkers=1, dx=dx,
+                        min_dist=0.005,
+                                         nsrc_schedule=dict(method='per_wavelength', nsrc=30),
+                                         error_thresh=1e-5, beta=beta, add_src=10, simulate=True)
+
+    obs = np.zeros([len(mic_pos), nfreq], dtype=np.complex128)
+    obs[:, 1:] = sim.compute(mic_pos, adjoint=False)
+    opt = ShapeOptimizer(init_vert, freqmax, nfreq,
+                         source_pos=pos_src, mic_pos=mic_pos, measurements=obs,
+                         nworkers=1, dx=dx, n_int=500,
+                         sim_kwargs=dict(min_dist=0.005,
+                                         nsrc_schedule=dict(method='per_wavelength', nsrc=np.array([30])),
+                                         error_thresh=1e-5, beta=beta, add_src=10))
+    hh = 1e-5
+    for i in range(ntest):
+        print("i = ", i)
+        vert_mod = init_vert.copy()
+        vert_mod[2] = vert_mod[2] + i*h*v
+        opt.update_sim(vert_mod, update_state=True, update_adjoint=True)
+        for l in range(4):
+            djval[l, i] = opt.partial_derivative(l)
+
+        jval[0, i] = opt.cost_fun()  # for tracking
+
+        vertmod2 = vert_mod.copy()
+        vertmod2[2] = vertmod2[2] - np.array([hh/2, 0.])
+        opt.update_sim(vertmod2, update_state=True, update_adjoint=False)
+        jval[1, i] = opt.cost_fun()
+        vertmod3 = vert_mod.copy()
+        vertmod3[2] = vertmod3[2] + np.array([hh/2, 0.])
+        opt.update_sim(vertmod3, update_state=True, update_adjoint=False)
+        jval[2, i] = opt.cost_fun()
+        vertmod2 = vert_mod.copy()
+        vertmod2[2] = vertmod2[2] - np.array([0., hh/2])
+        opt.update_sim(vertmod2, update_state=True, update_adjoint=False)
+        jval[3, i] = opt.cost_fun()
+        vertmod3 = vert_mod.copy()
+        vertmod3[2] = vertmod3[2] + np.array([0., hh/2])
+        opt.update_sim(vertmod3, update_state=True, update_adjoint=False)
+        jval[4, i] = opt.cost_fun()
+
+    fdjvalx = (jval[2, :] - jval[1, :]) / hh
+    fdjvaly = (jval[4, :] - jval[3, :]) / hh
+    xrange = np.arange(0, ntest)
+    plt.plot(xrange, fdjvalx, label='finite diffx')
+    plt.plot(xrange, fdjvaly, label='finite diffy')
+    plt.plot(xrange, djval[2, :, 0], 'k--', label='shape_derivx')
+    plt.plot(xrange, djval[2, :, 1], 'g--', label='shape_derivy')
+    plt.plot(xrange, jval[0,:], label='cost function')
+    plt.legend()
+    plt.show()
+    print(djval)

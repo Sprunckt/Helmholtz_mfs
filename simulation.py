@@ -134,9 +134,6 @@ class Simulation:
         self.ampl_adj = np.zeros([self.get_nvirt(), self.nfreqs], dtype=complex)
         if simulate and nfreq > 2:
             self.simulate(ind=np.arange(1, nfreq-1), adjoint=False, verbose=True)
-            # last frequency is not re-simulated : should compute the corresponding adjoint amplitudes
-            self.src_ampl_adj[:, -1] = self.obs[:, -1] - np.reshape(self.compute(self.mic_pos, np.array([-1]),
-                                                                                 adjoint=False), -1)
 
     def get_nbound(self):
         return len(self.room_bound)

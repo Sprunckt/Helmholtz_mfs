@@ -4,6 +4,7 @@ import numpy as np
 import unittest
 from simulation import Simulation
 from shape_optim import ShapeOptimizer
+from scipy.spatial import ConvexHull
 
 
 class TestShapeOpt(unittest.TestCase):
@@ -91,6 +92,7 @@ class TestShapeOpt2(unittest.TestCase):
     def test_large_angle(self):
         alpha = np.pi * 0.95
         vert = np.array([[0, 0.], [1., 0.], [0, 1.], [np.cos(alpha), np.sin(alpha)]])
+        vert = vert[ConvexHull(vert).vertices]
         src_angle = alpha * np.sqrt(2) / 4
         pos_src = np.array([[np.cos(src_angle), np.sin(src_angle)]]) * np.sqrt(3) / 4.
         mic_pos = np.array([[np.cos(np.pi / np.sqrt(5)), np.sin(np.pi / np.sqrt(5))]]) / 2
@@ -102,11 +104,13 @@ class TestShapeOpt2(unittest.TestCase):
                              source_pos=pos_src, mic_pos=mic_pos, measurements=obs, nworkers=1, dx=0.3, n_int=1000,
                              sim_kwargs=dict(min_dist=0.005, error_thresh=1e-5, beta=0.1, add_src=10,
                                              nsrc_schedule=dict(method='per_wavelength', nsrc=np.array([30]))))
-        h = 1e-5
+        print("poly: ", vert)
+        h = 1e-6
         # check the gradient at each vertex
         for i in range(len(vert)):
-            print("i = ", i)
             djval = opt.partial_derivative(i)
+            print("i = ", i, " part J_i = ", djval)
+
             vertmod = vert.copy()
             vertmod[i] = vertmod[i] + np.array([h/2, 0.])
             opt.update_sim(vertmod, update_state=True, update_adjoint=False)
@@ -128,5 +132,5 @@ class TestShapeOpt2(unittest.TestCase):
             fd = np.array([(jval2 - jval3) / h, (jval4 - jval5) / h])
             rel_err = np.abs((fd - djval) / fd)
             print("relative error: ", rel_err)
-            self.assertAlmostEqual(rel_err[0], 0, 1)  # check that the relative error is below 1 percent
-            self.assertAlmostEqual(rel_err[1], 0, 1)
+            self.assertAlmostEqual(rel_err[0], 0, 2)  # check that the relative error is below 1 percent
+            self.assertAlmostEqual(rel_err[1], 0, 2)

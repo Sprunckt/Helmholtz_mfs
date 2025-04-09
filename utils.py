@@ -221,8 +221,8 @@ class Polygon:
         angles = mod2pi(np.arctan2(self.vertices[:, 1] - self.origin[1], self.vertices[:, 0] - self.origin[0]))
         self.vertices = self.vertices[np.argsort(angles)]
 
-    def update_vertices(self, new_vert, sort=False, bounds=None, check_in=None, convex_proj=False, update_origin=False, min_length=None,
-                        max_angle=None):
+    def update_vertices(self, new_vert, sort=False, bounds=None, check_in=None, convex_proj=False, update_origin=False,
+                        min_length=None, max_angle=None):
         if bounds is not None:
             if not np.all((bounds[0] < new_vert) & (new_vert < bounds[1])):
                 return False 
@@ -230,10 +230,9 @@ class Polygon:
             new_vert = new_vert[ConvexHull(new_vert).vertices]
 
         self.vertices = new_vert.copy()
-
         self._update_edges()
 
-        if min_length is not None: # merge vertices
+        if min_length is not None:  # merge vertices
             while np.min(self.lengths) < min_length and self.nedges >= 3:
                 indmin = np.argmin(self.lengths)
                 v1, v2 = self.vertices[indmin], self.vertices[(indmin + 1) % self.nedges]

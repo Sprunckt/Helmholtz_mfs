@@ -2,10 +2,9 @@ import numpy as np
 from mfs import (SampledBoundary, particular_solution_gradient, robin_operator, particular_solution,
                  fundamental_solution, fundamental_solution_derivative, robin_operator_efficient)
 from utils import Polygon, c
-import multiprocessing as mp
 import time
-from functools import partial
 import matplotlib.pyplot as plt
+from joblib import Parallel, delayed
 
 
 class Simulation:
@@ -178,11 +177,8 @@ class Simulation:
             res = np.full([len(points), len(ind)], np.nan, dtype=np.complex128)
             for k, i in enumerate(ind):
                 res[:, k] = self._compute_freq(i, adjoint)
-        elif self.nworkers > 1:
-            with mp.get_context('fork').Pool(processes=self.nworkers) as pool:
-                # local function to compute the solution at a given frequency, take only ind as argument
-                fun = partial(self._compute_freq, adjoint=adjoint)
-                res = np.stack(pool.map(fun, ind), axis=1)
+        else:
+            res = np.stack(Parallel(n_jobs=self.nworkers)(delayed(self._compute_freq)(i, adjoint) for i in ind), axis=1)
 
         t2 = time.time()
         if verbose:
@@ -209,7 +205,7 @@ class Simulation:
 
         return res
 
-    def compute_grad_freq(self, ind, adjoint=False):
+    def _compute_grad_freq(self, ind, adjoint=False):
         """Compute the gradient of the solution at the given points (shape (npoints, d)) at the given frequency"""
         ampl, ampl_src, src_pos = self._select_sources(ind, adjoint)
 
@@ -288,12 +284,11 @@ class Simulation:
             for i in ind:
                 ampl[:, i] = self._simulate_freq(i, verbose=verbose, adjoint=adjoint)
 
-        elif self.nworkers > 1:
-            with mp.get_context('fork').Pool(processes=self.nworkers) as pool:
-                partfunc = partial(self._simulate_freq, verbose=verbose, adjoint=adjoint)
-                ampl_pool = pool.map(partfunc, ind)
-                for i, ii in enumerate(ind):
-                    ampl[:, ii] = ampl_pool[i]
+        else:
+            ampl_pool = Parallel(n_jobs=self.nworkers)(delayed(self._simulate_freq)(i, adjoint, verbose) for i in ind)
+
+            for i, ii in enumerate(ind):
+                ampl[:, ii] = ampl_pool[i]
 
         if not adjoint:  # update the adjoint amplitudes
             self.src_ampl_adj[:, ind] = self.obs[:, ind] - self.compute(self.mic_pos, ind, adjoint=False)
@@ -316,12 +311,10 @@ class Simulation:
             res_grad = np.zeros([len(points), len(ind), 2], dtype=np.complex128)
 
             for k, i in enumerate(ind):
-                res_grad[:, k] = self.compute_grad_freq(i, adjoint=adjoint)
-        elif self.nworkers > 1:
-            with mp.get_context('fork').Pool(processes=self.nworkers) as pool:
-                # local function to compute the solution at a given frequency, take only ind as argument
-                fun = partial(self.compute_grad_freq, adjoint=adjoint)
-                res_grad = np.stack(pool.map(fun, ind), axis=1)
+                res_grad[:, k] = self._compute_grad_freq(i, adjoint=adjoint)
+        else:
+            res_grad = Parallel(n_jobs=self.nworkers)(delayed(self._compute_grad_freq)(i, adjoint) for i in ind)
+            res_grad = np.stack(res_grad, axis=1)
 
         t2 = time.time()
         if verbose:
@@ -329,7 +322,7 @@ class Simulation:
 
         return res_grad
 
-    def compute_corner_grad_freq(self, ind, adjoint=False):
+    def _compute_corner_grad_freq(self, ind, adjoint=False):
         """Return the gradient of the solution at each corner"""
         k = self.wave_numbers[ind]
         ampl, ampl_src, src_pos = self._select_sources(ind, adjoint)
@@ -362,21 +355,19 @@ class Simulation:
                                       ampl[trunc_recentered + (nsrc + t*self.poly.nedges), None], axis=0)
         return nder
 
-    def compute_corner_grad(self, freq_ind=None, adjoint=False, verbose=False):
+    def compute_corner_grad(self, ind=None, adjoint=False, verbose=False):
         t1 = time.time()
-        if freq_ind is None:  # compute all frequencies if not specified
-            freq_ind = np.arange(1, self.nfreqs)
+        if ind is None:  # compute all frequencies if not specified
+            ind = np.arange(1, self.nfreqs)
 
         if self.nworkers == 1:
-            res_grad = np.zeros([self.poly.nedges, len(freq_ind), 2], dtype=np.complex128)
+            res_grad = np.zeros([self.poly.nedges, len(ind), 2], dtype=np.complex128)
 
-            for k, i in enumerate(freq_ind):
-                res_grad[:, k] = self.compute_corner_grad_freq(i, adjoint=adjoint)
-        elif self.nworkers > 1:
-            with mp.get_context('fork').Pool(processes=self.nworkers) as pool:
-                # local function to compute the solution at a given frequency, take only ind as argument
-                fun = partial(self.compute_corner_grad_freq, adjoint=adjoint)
-                res_grad = np.stack(pool.map(fun, freq_ind), axis=1)
+            for k, i in enumerate(ind):
+                res_grad[:, k] = self._compute_corner_grad_freq(i, adjoint=adjoint)
+        else:
+            res_grad = Parallel(n_jobs=self.nworkers)(delayed(self._compute_corner_grad_freq)(i, adjoint) for i in ind)
+            res_grad = np.stack(res_grad, axis=1)
 
         t2 = time.time()
         if verbose:

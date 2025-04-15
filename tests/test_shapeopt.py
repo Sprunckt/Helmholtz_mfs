@@ -134,3 +134,41 @@ class TestShapeOpt2(unittest.TestCase):
             print("relative error: ", rel_err)
             self.assertAlmostEqual(rel_err[0], 0, 2)  # check that the relative error is below 1 percent
             self.assertAlmostEqual(rel_err[1], 0, 2)
+
+
+class TestFit(unittest.TestCase):
+    def test_fit1(self):  # simple test case: shift one edge of a rectangle by 5cm outwards
+        lx, ly = 3.21, 4.541
+
+        optim_vert = np.array([[-lx / 2, -ly / 2], [lx / 2, -ly / 2], [lx / 2, ly / 2], [-lx / 2, ly / 2]])
+        print("optim_vert:", optim_vert)
+        pos_src = np.zeros([1, 2])
+        nmic, nfreqs, fs, beta = 32, 16, 256, 0.1 - 0.05j
+        mic_pos = np.stack([np.cos(np.linspace(0, 2 * np.pi, nmic, endpoint=False)),
+                            np.sin(np.linspace(0, 2 * np.pi, nmic, endpoint=False))], axis=1) * 0.9
+        t = Simulation(optim_vert, fs, nfreqs, pos_src=pos_src, mic_pos=mic_pos, nworkers=2, dx=0.3,
+                       min_dist=0.005, nsrc_schedule=dict(method='per_wavelength', nsrc=30),
+                       error_thresh=1e-5, beta=beta, add_src=10, simulate=True)
+        obs = np.zeros([nmic, t.nfreqs], dtype=complex)
+        obs[:, 1:] = t.compute(mic_pos)
+        np.save("obs.npy", obs)
+
+        obs = np.load("obs.npy")
+        pert_vert = optim_vert.copy()
+        pert_vert[1:3, 0] += 0.051
+        print("original error: ", np.linalg.norm(pert_vert - optim_vert, axis=-1))
+
+        opt = ShapeOptimizer(pert_vert, fs=fs, nfreq=nfreqs, source_pos=pos_src, mic_pos=mic_pos, measurements=obs,
+                             dx=0.3,
+                             nworkers=2, n_int=500, verbose=True, sim_kwargs={'beta': beta, 'add_src': 10})
+        opt.fit(10, neval_search=7)
+
+        final_vert = opt.sim.poly.vertices
+        angles_ind1 = np.argsort(np.arctan2(final_vert[:, 1], final_vert[:, 0]))
+        angles_ind2 = np.argsort(np.arctan2(optim_vert[:, 1], optim_vert[:, 0]))
+
+        final_error = np.linalg.norm(final_vert[angles_ind1] - optim_vert[angles_ind2], axis=-1)
+        print("final error: ", final_error)
+        print("optimal poly: ", optim_vert)
+        print("final poly: ", final_vert)
+        self.assertTrue(np.all(final_error < 5e-3), "Final error too high")  # tested : error goes from 5cm to < 3mm

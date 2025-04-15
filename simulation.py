@@ -10,7 +10,7 @@ from joblib import Parallel, delayed
 class Simulation:
     def __init__(self, vertices: np.ndarray, fs: float, nfreq: int, dx: float, pos_src: np.ndarray, mic_pos: np.ndarray,
                  observations=None, add_src=15, nsrc_schedule=None, min_dist=0.01, error_thresh=0.05, sep_red=0.8,
-                 src_ampl=None, beta=0.1j, origin=None, vmin_dist=0, nworkers=1, simulate=False, max_tries=5):
+                 src_ampl=None, beta=0.1, origin=None, vmin_dist=0, nworkers=1, simulate=False, max_tries=5):
         """
         Simulation class for Helmholtz equation: simulate a source at pos_src in a polygonal domain with boundary
         conditions at different frequencies. Can generate time-domain signals by applying an inverse Fourier transform.

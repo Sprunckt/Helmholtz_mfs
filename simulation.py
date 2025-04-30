@@ -131,8 +131,8 @@ class Simulation:
         self.nsrc_schedule = nsrc_schedule
         # amplitudes for adjoint virtual sources
         self.ampl_adj = np.zeros([self.get_nvirt(), self.nfreqs], dtype=complex)
-        if simulate and nfreq > 2:
-            self.simulate(ind=np.arange(1, nfreq-1), adjoint=False, verbose=True)
+        if simulate and nfreq > 2:   # nfreq - 1 because the last freq is already computed
+            self.simulate(ind=np.arange(1, nfreq-1), adjoint=False, verbose=True, reset_ampl=False)
 
     def get_nbound(self):
         return len(self.room_bound)
@@ -266,7 +266,7 @@ class Simulation:
         """Return indices from the range of frequencies [fmin, fmax]"""
         return np.where((self.freqs > fmin) & (self.freqs <= fmax))[0]
 
-    def simulate(self, ind=None, adjoint=False, verbose=True):
+    def simulate(self, ind=None, adjoint=False, verbose=True, reset_ampl=False):
         """Compute the solution coefficients at each frequency using nworkers processes."""
         if ind is None:  # compute all frequencies if not specified
             ind = np.arange(1, self.nfreqs)
@@ -291,7 +291,8 @@ class Simulation:
                 ampl[:, ii] = ampl_pool[i]
 
         if not adjoint:  # update the adjoint amplitudes
-            self.src_ampl_adj[:] = 0  # reset adjoint amplitudes
+            if reset_ampl:
+                self.src_ampl_adj[:] = 0  # reset adjoint amplitudes
             self.src_ampl_adj[:, ind] = self.obs[:, ind] - self.compute(self.mic_pos, ind, adjoint=False)
         if verbose:
             print("total simulation time : {} s".format(time.time()-t1))

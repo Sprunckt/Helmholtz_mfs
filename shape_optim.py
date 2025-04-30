@@ -310,7 +310,7 @@ class ShapeOptimizer:
 
     def _update_state(self, simulate=True):
         if simulate:
-            self.sim.simulate(self._active_ind, adjoint=False, verbose=False)
+            self.sim.simulate(self._active_ind, adjoint=False, verbose=False, reset_ampl=True)
 
         self.p_values = self.sim.compute(self.quad_points, self._active_ind, adjoint=False)
         self.cornerval_p = self.sim.compute_corner_values(self._active_ind, adjoint=False)
@@ -484,8 +484,7 @@ class ShapeOptimizer:
         print("total time: {}, final cost: {}".format(time.time() - tstart, log["cost"][-1]))
         return res, log, log["cost"][-1]  # return the final optimization result
 
-    def random_multiscale_eval(self, bounds, n_steps_final, max_freq_ini, min_freq_ini,
-                              fit_params, n_ini=10, n_edges=None):
+    def random_multiscale_eval(self, bounds, max_freq_ini, min_freq_ini, fit_params, n_ini=10, n_edges=None):
         """Optimize shape using randomized initialization, do a single cost function evaluation for each
         initialization (no need to compute the adjoint state in that case).
         - bounds: list of 2 tuples (for x and y), lower and upper bounds for the random vertices, or a float
@@ -526,15 +525,16 @@ class ShapeOptimizer:
         dict_ini["costs"] = costs
         best_ind = np.argmin(costs)
         best_cost = costs[best_ind]
-        ini_save_path = save_path.split(".json")[0] + "_ini.json"
-        # save all parameters and costs as a single json file
-        dict_to_json(dict_ini, ini_save_path)
+        if fit_params.get("save_path") is not None:
+            ini_save_path = fit_params.get("save_path").split(".json")[0] + "_ini.json"
+            # save all parameters and costs as a single json file
+            dict_to_json(dict_ini, ini_save_path)
 
         success = self.update_sim(dict_ini[str(best_ind)], update_adjoint=False, update_state=False)
 
         if not success:
             print("Error before final fit, stopping")
-            print("Initial parameters and cost: ", params[best_ind], best_cost)
+            print("Initial parameters and cost: ", dict_ini[str(best_ind)], best_cost)
             exit(1)
 
         tend1 = time.time()

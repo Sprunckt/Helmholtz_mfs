@@ -23,6 +23,9 @@ class ShapeOptimizer:
                  measurements: np.ndarray, dx: float, nworkers=1, n_int=1000,
                  sim_kwargs=None, src_ampl=None, verbose=False, min_length=0.25, min_edges=None, max_angle=3.):
 
+        if sim_kwargs is None:
+            sim_kwargs = dict(min_dist=0.005, error_thresh=1e-5, beta=0.1, add_src=10,
+                              nsrc_schedule=dict(method='per_wavelength', nsrc=np.array([30])))
         self.p_grads, self.q_grads, self.p_values, self.q_values = None, None, None, None
         self.corner_values = None
 
@@ -211,7 +214,8 @@ class ShapeOptimizer:
         schedule["update_ind"] = 0
 
         self._increase_frequency_range(schedule)
-
+        self._update_state(simulate=True)
+        self._update_adjoint()
         if old_log is None:  # initialize log
             log = dict(grad=[], vert=[self.sim.poly.vertices.tolist()], signals=[])
             log["cost"] = [self.cost_fun()]
@@ -219,7 +223,6 @@ class ShapeOptimizer:
             log["signals_re"], log["signals_im"] = [signals.real.tolist()], [signals.imag.tolist()]
             log["max_freq"], log["min_freq"] = [self.max_freq], [self.min_freq]
             log["ind_min"], log["ind_max"] = [int(np.min(self._active_ind))], [int(np.max(self._active_ind))]
-            log["descent_type"] = [0]
             log["frequency_change"] = []
             log["initial_vert"] = self.sim.poly.vertices.copy()
             print("initial cost:", log["cost"][0])
@@ -484,7 +487,8 @@ class ShapeOptimizer:
         print("total time: {}, final cost: {}".format(time.time() - tstart, log["cost"][-1]))
         return res, log, log["cost"][-1]  # return the final optimization result
 
-    def random_multiscale_eval(self, bounds, max_freq_ini, min_freq_ini, fit_params, n_ini=10, n_edges=None):
+    def random_multiscale_eval(self, bounds, max_freq_ini, min_freq_ini, fit_params, n_ini=10, n_edges=None,
+                               max_try=1e6):
         """Optimize shape using randomized initialization, do a single cost function evaluation for each
         initialization (no need to compute the adjoint state in that case).
         - bounds: list of 2 tuples (for x and y), lower and upper bounds for the random vertices, or a float
@@ -518,6 +522,7 @@ class ShapeOptimizer:
                 continue
             cost = self.cost_fun()
             print("Cost: ", cost, flush=True)
+            print("Current polygon: \n", self.sim.poly.vertices, flush=True)
             costs[curr_ini] = cost
             dict_ini[str(curr_ini)] = self.get_params()
             curr_ini += 1
@@ -530,7 +535,7 @@ class ShapeOptimizer:
             # save all parameters and costs as a single json file
             dict_to_json(dict_ini, ini_save_path)
 
-        success = self.update_sim(dict_ini[str(best_ind)], update_adjoint=False, update_state=False)
+        success = self.update_sim(dict_ini[str(best_ind)], update_adjoint=False, update_state=True)
 
         if not success:
             print("Error before final fit, stopping")

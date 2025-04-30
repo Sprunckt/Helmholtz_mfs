@@ -179,8 +179,7 @@ class ShapeOptimizer:
             print("updating min, max frequencies to: ", (self.min_freq, self.max_freq))
 
             schedule["update_ind"] += 1
-            self._active_ind = self.sim.get_ind(self.min_freq, self.max_freq)
-            self._nactive = len(self._active_ind)
+            self._set_active_indices(self.sim.get_ind(self.min_freq, self.max_freq))
             return True
         else:
             return False
@@ -262,14 +261,11 @@ class ShapeOptimizer:
 
             gradcost = np.linalg.norm(grad)
 
-            act_ind = self._get_active_indices()
-            self._set_active_indices(act_ind)
             cost = self.cost_fun()
             log["cost"].append(cost)
 
             signals = self.get_signals()
             log["signals_re"].append(signals.real.tolist()), log["signals_im"].append(signals.imag.tolist())
-            self._set_active_indices(act_ind)
             log["ind_min"].append(int(np.min(self._active_ind))), log["ind_max"].append(int(np.max(self._active_ind)))
 
             log["grad"].append(grad.tolist()), log["vert"].append(self.sim.poly.vertices.tolist())
@@ -399,9 +395,6 @@ class ShapeOptimizer:
         return 0.5*np.sum(np.real(self.sim.src_ampl_adj *  # contains the diffs between observations and state values
                                   self.sim.src_ampl_adj.conj())) / self.nmics / self._nactive
 
-    def cost_fun_full(self):
-        return 0.5*np.real(self.diffs*self.diffs.conj())
-
     def get_signals(self):
         return self.sim.compute(self.sim.mic_pos, self._active_ind)
 
@@ -413,9 +406,10 @@ class ShapeOptimizer:
         return grad
 
     def random_multiscale_fit(self, bounds, n_steps_final, n_steps_ini, max_freq_ini, min_freq_ini,
-                              fit_params, n_ini=10,  patience_final=None, n_edges=None, save_path=None,
-                              br_params=None):
-        """Optimize shape using randomized initialization and refining frequencies at each restart.
+                              fit_params, n_ini=10,  patience_final=None, n_edges=None, save_path=None):
+        """
+        Optimize shape using randomized initializations. Execute a few steps of optimization for each
+        initialization, then refine the best initialization.
         - bounds: list of 2 tuples (for x and y), lower and upper bounds for the random vertices, or a float
         (maximum norm of the vertices)
         - n_steps_final: number of steps for the final (refined) optimization
@@ -425,24 +419,20 @@ class ShapeOptimizer:
         - n_ini: number of random initializations
         - save_path: path to save the optimization results
         """
-        if br_params is None:
-            n_keep, n_iter = [], []
-        else:
-            n_keep, n_iter = br_params[0], br_params[1]
+
         tstart = time.time()
         if n_edges is None:
             n_edges = self.sim.poly.nedges
+
         in_constraints = np.concatenate([self.sim.mic_pos, self.sim.src_pos], axis=0)
         max_freqs_copy = fit_params["schedule"]["max_freqs"].copy()
         min_freqs_copy = fit_params["schedule"]["min_freqs"].copy()
         fit_params["niter"] = n_steps_ini
         fit_params["schedule"]["max_freqs"], fit_params["schedule"]["min_freqs"] = [max_freq_ini], [min_freq_ini]
-        if br_params is None:
-            fit_params["save_freq"] = 5
-        else:
-            fit_params["save_freq"] = np.maximum(np.max(br_params[1]), n_steps_ini) + 5
+        old_step, old_save_freq = fit_params["step"], fit_params["save_freq"]
 
-        old_step = fit_params["step"]
+        fit_params["save_freq"] = 1
+
         print("Starting random initialization")
 
         costs, params, logs = np.zeros(n_ini), [], []
@@ -450,45 +440,25 @@ class ShapeOptimizer:
         fit_params["decrease_period"], old_period = 1, fit_params.get("decrease_period")  # speed up initialization
         fit_params["step_decrease"], old_decrease = 0.6, fit_params.get("step_decrease")
         while curr_ini < n_ini:
-
-            if save_path is not None:  # contain base path
+            if save_path is not None:  # contains base path
                 fit_params["save_path"] = save_path.split(".json")[0] + "_{}.json".format(curr_ini)
             print("Initialization number: ", curr_ini)
-            vertices = random_poly(bounds, n_edges, in_constraints=in_constraints, min_length=.5, min_dist=0.5).vertices  # old 3*np.pi/4, min°length 2
+            vertices = random_poly(bounds, n_edges, in_constraints=in_constraints,
+                                   min_angle=np.pi/8, max_angle=7*np.pi/8, min_length=1, min_dist=0.5).vertices
             success = self.update_sim(vertices, update_adjoint=False, update_state=False)
             print("polyshape" , vertices.shape)
             if not success:
-                print("Initialization failed, trying again", flush=True)
+                print("Initialization failed at start, trying again", flush=True)
                 continue
             res, log, cost = self.fit(**fit_params)
             if cost == np.inf:  # optimization failed, try another init
-                print("Initialization failed, trying again", flush=True)
+                print("Initialization failed at optim, trying again", flush=True)
                 continue
 
             params.append(self.get_params())
             logs.append(log)
             costs[curr_ini] = cost
             curr_ini += 1
-
-        ini_num = np.arange(n_ini)
-        for i in range(len(n_keep)):
-            best_ind = np.argsort(costs)[:n_keep[i]]
-            ini_num = ini_num[best_ind]
-            print("best ind: {}\n best costs: {}".format(ini_num, costs[best_ind]))
-            new_params, costs, new_logs = [], np.zeros(n_keep[i]), []
-            fit_params["niter"] = n_iter[i]
-            for j in range(n_keep[i]):
-                print("Initialization number: ", ini_num[j], flush=True)
-                fit_params["old_log"] = logs[best_ind[j]]
-                if save_path is not None:  # contain base path
-                    fit_params["save_path"] = save_path.split(".json")[0] + "_{}.json".format(ini_num[j])
-                self.update_sim(params[best_ind[j]], update_adjoint=False, update_state=False)
-                res, log, cost = self.fit(**fit_params)
-                new_logs.append(log)
-                costs[j] = cost
-                new_params.append(self.get_params())
-            params = new_params
-            logs = new_logs
 
         best_ind = np.argmin(costs)
         best_cost = costs[best_ind]
@@ -513,5 +483,67 @@ class ShapeOptimizer:
         res, log, _ = self.fit(**fit_params)
         print("total time: {}, final cost: {}".format(time.time() - tstart, log["cost"][-1]))
         return res, log, log["cost"][-1]  # return the final optimization result
+
+    def random_multiscale_eval(self, bounds, n_steps_final, max_freq_ini, min_freq_ini,
+                              fit_params, n_ini=10, n_edges=None):
+        """Optimize shape using randomized initialization, do a single cost function evaluation for each
+        initialization (no need to compute the adjoint state in that case).
+        - bounds: list of 2 tuples (for x and y), lower and upper bounds for the random vertices, or a float
+        (maximum norm of the vertices)
+        - n_steps_final: number of steps for the final (refined) optimization
+        - n_steps_ini: number of steps for the initial random optimization
+        - max_freq_ini, min_freq_ini: initial frequency range
+        - fit_params: dictionary containing the optimization parameters (should contain a valid schedule)
+        - n_ini: number of random initializations
+        - save_path: path to save the optimization results
+        """
+
+        tstart = time.time()
+        if n_edges is None:
+            n_edges = self.sim.poly.nedges
+
+        self._set_active_indices(self.sim.get_ind(min_freq_ini, max_freq_ini))  # set active frequencies for init.
+        in_constraints = np.concatenate([self.sim.mic_pos, self.sim.src_pos], axis=0)
+
+        print("Starting random initialization")
+        costs = np.zeros(n_ini)
+        dict_ini = dict()
+        curr_ini = 0
+        while curr_ini < n_ini:
+            print("Initialization number: ", curr_ini)
+            vertices = random_poly(bounds, n_edges, in_constraints=in_constraints,
+                                   min_angle=np.pi/8, max_angle=7*np.pi/8, min_length=1, min_dist=0.5).vertices
+            success = self.update_sim(vertices, update_adjoint=False, update_state=True)
+            if not success:
+                print("Initialization failed at start, trying again", flush=True)
+                continue
+            cost = self.cost_fun()
+            print("Cost: ", cost, flush=True)
+            costs[curr_ini] = cost
+            dict_ini[str(curr_ini)] = self.get_params()
+            curr_ini += 1
+
+        dict_ini["costs"] = costs
+        best_ind = np.argmin(costs)
+        best_cost = costs[best_ind]
+        ini_save_path = save_path.split(".json")[0] + "_ini.json"
+        # save all parameters and costs as a single json file
+        dict_to_json(dict_ini, ini_save_path)
+
+        success = self.update_sim(dict_ini[str(best_ind)], update_adjoint=False, update_state=False)
+
+        if not success:
+            print("Error before final fit, stopping")
+            print("Initial parameters and cost: ", params[best_ind], best_cost)
+            exit(1)
+
+        tend1 = time.time()
+        print("Random initialization done, best cost: {}, time: {}".format(best_cost, tend1 - tstart))
+        print("Starting final optimization")
+
+        res, log, _ = self.fit(**fit_params)
+        print("total time: {}, final cost: {}".format(time.time() - tstart, log["cost"][-1]))
+        return res, log, log["cost"][-1]  # return the final optimization result
+
 
 # todo: check that the reordering of vertices does not cause unwanted behaviors.

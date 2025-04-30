@@ -291,6 +291,7 @@ class Simulation:
                 ampl[:, ii] = ampl_pool[i]
 
         if not adjoint:  # update the adjoint amplitudes
+            self.src_ampl_adj[:] = 0  # reset adjoint amplitudes
             self.src_ampl_adj[:, ind] = self.obs[:, ind] - self.compute(self.mic_pos, ind, adjoint=False)
         if verbose:
             print("total simulation time : {} s".format(time.time()-t1))

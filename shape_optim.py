@@ -488,7 +488,7 @@ class ShapeOptimizer:
         return res, log, log["cost"][-1]  # return the final optimization result
 
     def random_multiscale_eval(self, bounds, max_freq_ini, min_freq_ini, fit_params, n_ini=10, n_edges=None,
-                               max_try=1e6):
+                               max_tries=1e6):
         """Optimize shape using randomized initialization, do a single cost function evaluation for each
         initialization (no need to compute the adjoint state in that case).
         - bounds: list of 2 tuples (for x and y), lower and upper bounds for the random vertices, or a float
@@ -513,15 +513,22 @@ class ShapeOptimizer:
         dict_ini = dict()
         curr_ini = 0
         while curr_ini < n_ini:
+            tini1 = time.time()
             print("Initialization number: ", curr_ini)
             vertices = random_poly(bounds, n_edges, in_constraints=in_constraints,
-                                   min_angle=np.pi/8, max_angle=7*np.pi/8, min_length=1, min_dist=0.5).vertices
+                                   min_angle=np.pi/8, max_angle=7*np.pi/8, min_length=1, min_dist=0.5, max_tries=max_tries).vertices
+            if len(vertices) == 0:
+                print("Random polygon generation stopped after {} tries".format(max_tries))
+                exit(-1)
+                
             success = self.update_sim(vertices, update_adjoint=False, update_state=True)
             if not success:
                 print("Initialization failed at start, trying again", flush=True)
                 continue
             cost = self.cost_fun()
-            print("Cost: ", cost, flush=True)
+            tini2 = time.time()
+
+            print("Cost: {}  Time: {}".format(cost, tini2 - tini1), flush=True)
             print("Current polygon: \n", self.sim.poly.vertices, flush=True)
             costs[curr_ini] = cost
             dict_ini[str(curr_ini)] = self.get_params()

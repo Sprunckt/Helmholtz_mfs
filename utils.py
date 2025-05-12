@@ -3,8 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from shapely.geometry import Polygon as ShapelyPolygon
 from shapely.geometry import Point as ShapelyPoint
-import pygmsh
-from scipy.integrate import simps
+from scipy.integrate import simpson
 from scipy.spatial import ConvexHull
 import json 
 
@@ -163,10 +162,6 @@ class Polygon:
 
         return angles, diffs, norms
 
-    def sample_inside(self, sep):
-        points, triang = gmsh_sampling(self.vertices[:self.nedges, :], mesh_size=sep)
-        return points[:, :2], triang
-
     def _update_edges(self):
         self.edges = np.roll(self.vertices, -1, axis=0) - self.vertices
         self.nedges = len(self.edges)
@@ -288,7 +283,7 @@ class Polygon:
     def integrate_edge(self, vals, quad_nodes, edge_id):
         """Integrate the values vals over the edge with id edge_id, using the quadrature nodes quad_nodes and the
         simpson rule."""
-        return simps(vals, quad_nodes, axis=0) * self.lengths[edge_id]
+        return simpson(vals, quad_nodes, axis=0) * self.lengths[edge_id]
 
     def integrate(self, vals, quad_nodes, quad_ids):
         """Integrate the values vals over the polygon, using the quadrature nodes quad_nodes and the simpson rule."""
@@ -332,13 +327,6 @@ def angle_distance(angle1, angle2):
     return np.minimum(np.abs(angle1 - angle2), 2*np.pi - np.abs(angle1 - angle2))
 
 
-def gmsh_sampling(vertices, mesh_size):
-    with pygmsh.geo.Geometry() as geom:
-        geom.add_polygon(vertices, mesh_size=mesh_size)
-        mesh = geom.generate_mesh()
-    return mesh.points, mesh.cells_dict["triangle"]
-
-
 def compute_intersections(p1, vector1, p2, vectors2, tol=1e-6):
     """Compute the intersection between a line defined by a point and a vector and a set of lines defined by points
     and vectors. Return the intersection points."""
@@ -361,7 +349,7 @@ def rotate(points, angle, center):
     return (points - center) @ rot + center
 
 
-def random_poly(bounds, nvertices, in_constraints=None, min_length=None, min_angle=None, max_angle=None, min_dist=0.):
+def random_poly(bounds, nvertices, in_constraints=None, min_length=None, min_angle=None, max_angle=None, min_dist=0., max_tries=1e6):
     if type(bounds) == float:
         gen_fun = lambda: random_point_disk(bounds, nvertices)
     else:
@@ -369,7 +357,9 @@ def random_poly(bounds, nvertices, in_constraints=None, min_length=None, min_ang
         ymin, ymax = bounds[1]
         gen_fun = lambda: np.random.rand(nvertices, 2)*np.array([xmax - xmin, ymax - ymin]) + np.array([xmin, ymin])  
 
-    while True:
+    n = 0
+    while n < max_tries:
+        n += 1
         vertices = gen_fun()
         vertices = vertices[ConvexHull(vertices).vertices]
         if len(vertices) == nvertices:
@@ -385,6 +375,8 @@ def random_poly(bounds, nvertices, in_constraints=None, min_length=None, min_ang
                     return poly
             else:
                 return poly
+    # reached maximal number of tries, abort
+    return np.array([])
 
 
 def random_point_disk(r, n, seed=None):

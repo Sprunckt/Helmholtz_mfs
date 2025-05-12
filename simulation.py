@@ -76,7 +76,6 @@ class Simulation:
 
         if nsrc_schedule["method"] == "per_wavelength":
             nsrc_schedule["sep"] = c / self.freqs[-1] / (nsrc_schedule["nsrc"] - 1)
-        print(nsrc_schedule)
         self.vbound = SampledBoundary(self.poly, nsrc_schedule["sep"],
                                       min_dist=0., sample_type="separation", dx=self.dx)
         self.ampl = np.zeros([self.get_nvirt(), self.nfreqs], dtype=complex)
@@ -85,14 +84,14 @@ class Simulation:
         nbound = self.get_nvirt()*1.1
         # sample boundary
         self.room_bound = SampledBoundary(self.poly, nbound, min_dist=min_dist, sample_type="total")
-        print("Number of boundary points: ", self.get_nbound())
+        print("Number of boundary points: ", self.get_nbound(), flush=True)
 
         nerror = 1.3 * nbound
         # nodes for computing error
         self.error_bound = SampledBoundary(self.poly, nerror, min_dist=min_dist, sample_type="total")
-        print("Number of error points: ", len(self.error_bound))
+        print("Number of error points: ", len(self.error_bound), flush=True)
 
-        print("simulating frequency ", self.freqs[-1])
+        print("simulating frequency ", self.freqs[-1], flush=True)
         rel_error = np.inf
         t1 = time.time()
         while rel_error > error_thresh and max_tries > 0:  # increase number of sources until precision threshold is met
@@ -110,23 +109,23 @@ class Simulation:
                 self.ampl = np.zeros([self.get_nvirt(), self.nfreqs], dtype=complex)
                 print("error {} above threshold, retrying "
                       "with separation {}, {} sources".format(rel_error, nsrc_schedule["sep"],
-                                                              len(self.vbound)))
+                                                              len(self.vbound)), flush=True)
 
                 totnsrc = len(self.vbound) + self.add_src * self.poly.nedges
                 if totnsrc > nbound:
                     nbound = totnsrc*1.1
-                    print("error above threshold, increasing number of boundary points")
+                    print("error above threshold, increasing number of boundary points", flush=True)
                     self.room_bound = SampledBoundary(self.poly, nbound, min_dist=min_dist, sample_type="total")
 
                     nerror = 1.3 * nbound
                     self.error_bound = SampledBoundary(self.poly, nerror, min_dist=min_dist, sample_type="total")
 
             if max_tries == 0 and rel_error > error_thresh:
-                print("error threshold not reached, simulation might be inaccurate")
+                print("error threshold not reached, simulation might be inaccurate", flush=True)
 
             t2 = time.time()
-            print("time {} s".format(t2-t1))
-            print("number of sources: {} relative error: {}".format(self.get_nvirt(), rel_error))
+            print("time {} s".format(t2-t1), flush=True)
+            print("number of sources: {} relative error: {}".format(self.get_nvirt(), rel_error), flush=True)
 
         self.nsrc_schedule = nsrc_schedule
         # amplitudes for adjoint virtual sources
@@ -155,7 +154,7 @@ class Simulation:
             self.ampl = np.zeros([self.get_nvirt(), self.nfreqs], dtype=complex)
             self.ampl_adj = np.zeros([self.get_nvirt(), self.nfreqs], dtype=complex)
         else:
-            print("Failure to update the polygon")
+            print("Failure to update the polygon", flush=True)
         return success
 
     def _select_sources(self, ind, adjoint):
@@ -182,7 +181,7 @@ class Simulation:
 
         t2 = time.time()
         if verbose:
-            print("total computation time : {} s".format(t2 - t1))
+            print("total computation time : {} s".format(t2 - t1), flush=True)
 
         return res
 
@@ -230,14 +229,8 @@ class Simulation:
         amplitudes (sources and particular solutions)."""
         t1 = time.time()
 
-        # reset amplitudes to 1 to compute virtual sources contribution
-        if adjoint:
-            self.ampl_adj[:, ind] = 1
-        else:
-            self.ampl[:, ind] = 1
-
         # assemble the system matrix and rhs
-        A = self._boundary_operator_efficient(ind, adjoint=adjoint)
+        A = self._boundary_operator_efficient(ind, adjoint=adjoint)  # amplitudes have already been reset to 1 to compute this
 
         # source contribution
         b = - np.reshape(self._boundary_operator_efficient_src(ind, adjoint=adjoint), [-1, 1])
@@ -250,7 +243,7 @@ class Simulation:
 
         t2 = time.time()
         if verbose:
-            print("simulating frequency {}; time {} s; {} sources".format(self.freqs[ind], t2-t1, self.get_nvirt()))
+            print("simulating frequency {}; time {} s; {} sources".format(self.freqs[ind], t2-t1, self.get_nvirt()), flush=True)
 
         return res.squeeze()
 
@@ -279,6 +272,10 @@ class Simulation:
             ampl = self.ampl_adj
         else:
             ampl = self.ampl
+
+        # reset amplitudes to 1 to compute virtual sources contribution
+        ampl[:, ind] = 1
+
         t1 = time.time()
         if self.nworkers == 1:  # 1 frequency at a time
             for i in ind:
@@ -295,7 +292,7 @@ class Simulation:
                 self.src_ampl_adj[:] = 0  # reset adjoint amplitudes
             self.src_ampl_adj[:, ind] = self.obs[:, ind] - self.compute(self.mic_pos, ind, adjoint=False)
         if verbose:
-            print("total simulation time : {} s".format(time.time()-t1))
+            print("total simulation time : {} s".format(time.time()-t1), flush=True)
 
     def compute_grad(self, points, ind=None, adjoint=False, verbose=False):
         """Compute the gradient of the solution at the given points (shape (npoints, d)) at the given frequency.
@@ -320,7 +317,7 @@ class Simulation:
 
         t2 = time.time()
         if verbose:
-            print("total computation time : {} s".format(t2 - t1))
+            print("total computation time : {} s".format(t2 - t1), flush=True)
 
         return res_grad
 
@@ -373,7 +370,7 @@ class Simulation:
 
         t2 = time.time()
         if verbose:
-            print("total computation time : {} s".format(t2 - t1))
+            print("total computation time : {} s".format(t2 - t1), flush=True)
 
         return res_grad
 

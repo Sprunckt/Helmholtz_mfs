@@ -12,7 +12,7 @@ def cost_check_stop(log, patience, tol):
 
 
 def vert_check_stop(log, patience, tol):
-    if len(log["vert"]) > patience:
+    if len(log["vert"]) > patience and len(log["vert"][-1]) == len(log["vert"][-patience]):
         if np.max(np.linalg.norm(np.array(log["vert"][-1]) - np.array(log["vert"][-patience]), axis=1)) < tol:
             return True
     return False

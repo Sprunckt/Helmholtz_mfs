@@ -21,8 +21,6 @@ class TestPolygon1(unittest.TestCase):
                                                       mod2pi(np.pi - 2 * np.pi / k)), 0, places=12)
                 self.assertAlmostEqual(angle_distance(poly.polar_angles[i],
                                                       mod2pi(np.pi/2 + np.pi * (2*i+1) / k)), 0, places=12)
-                #self.assertAlmostEqual(angle_distance(mod2pi(poly.theta[i]),
-                #                                      mod2pi(np.pi * (2*i+1) / k)), 0, places=12)
 
     def test_param(self):
         for k in range(3, self.max_nedges + 1):

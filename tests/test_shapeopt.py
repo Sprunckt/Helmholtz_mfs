@@ -101,7 +101,7 @@ class TestShapeOpt2(unittest.TestCase):
         obs[:, 1:] = (np.linspace(1, 4, 3) * np.exp(1j * np.linspace(0, 2 * np.pi, 3)) +
                       1j * np.linspace(3, 7, 3) * np.exp(3j * np.linspace(0, 2 * np.pi, 3)))
         opt = ShapeOptimizer(vert, 512, 4,
-                             source_pos=pos_src, mic_pos=mic_pos, measurements=obs, nworkers=1, dx=0.3, n_int=1000,
+                             source_pos=pos_src, mic_pos=mic_pos, measurements=obs, nworkers=1, dx=0.3, n_int=1500,
                              sim_kwargs=dict(min_dist=0.005, error_thresh=1e-5, beta=0.1, add_src=10,
                                              nsrc_schedule=dict(method='per_wavelength', nsrc=np.array([30]))))
         print("poly: ", vert)

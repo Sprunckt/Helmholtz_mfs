@@ -22,7 +22,22 @@ class ShapeOptimizer:
     def __init__(self, init_vertices: np.ndarray, fs: float, nfreq: int, source_pos: np.ndarray, mic_pos: np.ndarray,
                  measurements: np.ndarray, dx: float, nworkers=1, n_int=1000,
                  sim_kwargs=None, src_ampl=None, verbose=False, min_length=0.25, min_edges=None, max_angle=3.):
-        """Shape optimization class for the Helmholtz equation with point sources over a polygon."""
+        """Shape optimization class for the Helmholtz equation with point sources over a polygon.
+        Args:
+            -init_vertices: initial vertices of the polygon (shape (nedges, 2))
+            -fs: sampling frequency
+            -nfreq: number of frequencies
+            -source_pos: position of the sources (shape (nsources, 2))
+            -mic_pos: position of the microphones (shape (nmics, 2))
+            -measurements: measurements at the microphones (shape (nmics, nfreq), dtype complex)
+            -dx: distance between the virtual sources boundary and the domain boundary
+            -nworkers: number of workers for parallel computation (does not take into account numpy inner parallelization)
+            -n_int: number of quadrature points on the boundary
+            -sim_kwargs: additional arguments for the Simulation class
+            -src_ampl: source amplitude (shape (nsources, nfreq), dtype complex)
+            -min_length: minimum length of the edges
+            -max_angle: maximum angle between two edges
+            """
 
         if sim_kwargs is None:
             sim_kwargs = dict(min_dist=0.005, error_thresh=1e-5, beta=0.1, add_src=10,
@@ -191,11 +206,30 @@ class ShapeOptimizer:
     def fit(self, niter=100, jtol=1e-5, step=10, neval_search=3, step_decrease=0.85, min_iter=500,
             decrease_period=10, increase_period=10, step_increase=1.2, tol=0.01, stop_check="cost",
             patience=20, schedule=None, save_path=None, save_freq=20, old_log=None, penalization=np.inf):
-        """Perform a shape gradient descent with adaptive stepsize. Warning: state and adjoint should be updated if the
-        initial polygon is modified prior to calling fit.
-        schedule is a dictionary with keys: max_freqs, update_its. max_freqs and
-        update_its are lists of the same length, indicating the maximum frequencies and the iteration at which to update
-        the maximume frequency to the next value."""
+        """Perform a shape gradient descent with adaptive stepsize. 
+        Args:
+            -niter: maximal number of iterations
+            -schedule: dictionary with keys: max_freqs (list of maximal frequencies), min_freqs (list of minimal
+                frequencies), min_iter_freq (list of minimal number of iterations for each frequency range),
+                target_iter_freq (list of maximal number of iterations for each frequency range)
+            -jtol: hard stop cost function tolerance for stopping criterion
+            -step: initial stepsize 
+            -neval_search: maximal number of evaluations for the line search, the line search will stop if the cost
+                function decreases. The cost might increase if the maximal number of evaluations is reached.
+            -step_decrease, step_increase: decrease and increase factors for the stepsize
+            -increase_period: if the cost function is decreased at the first iteration of the line search, 
+                'increase_period' iterations in a row, the stepsize is increased
+            -decrease_period: if the cost function requires more than one line search iteration to decrease,
+                'decrease_period' iterations in a row, the stepsize is decreased    
+            -patience: duration over which to evaluate an additional stopping criterion (e.g. stop if the vertices have
+            not changed much over the last 'patience' iterations)
+            -tol: tolerance for the additional stopping criterion
+            -stop_check: stopping criterion, either 'cost' or 'vertices'
+            -penalization: penalization for the shape derivative, if np.inf, the shape derivative is not penalized
+            -old_log: if not None, the log to continue the optimization from
+            -min_iter: global minimal number of iterations before stopping
+            -save_path: path to save the optimization results
+            -save_freq: number of iterations between saves"""
 
         if stop_check == "cost":
             stop_check = cost_check_stop
@@ -209,7 +243,7 @@ class ShapeOptimizer:
 
         if schedule is None:  # default schedule : no batch, start at maximum frequency
             schedule = dict(max_freqs=[self.max_freq], min_iter_freq=[min_iter],
-                            target_iter_freq=[min_iter], min_freqs=[self.min_freq], step_reset=None)
+                            target_iter_freq=[min_iter], min_freqs=[self.min_freq])
 
         print("Schedule: ", schedule)
         schedule["update_ind"] = 0

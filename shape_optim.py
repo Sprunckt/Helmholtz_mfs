@@ -22,6 +22,7 @@ class ShapeOptimizer:
     def __init__(self, init_vertices: np.ndarray, fs: float, nfreq: int, source_pos: np.ndarray, mic_pos: np.ndarray,
                  measurements: np.ndarray, dx: float, nworkers=1, n_int=1000,
                  sim_kwargs=None, src_ampl=None, verbose=False, min_length=0.25, min_edges=None, max_angle=3.):
+        """Shape optimization class for the Helmholtz equation with point sources over a polygon."""
 
         if sim_kwargs is None:
             sim_kwargs = dict(min_dist=0.005, error_thresh=1e-5, beta=0.1, add_src=10,
@@ -409,7 +410,8 @@ class ShapeOptimizer:
         return grad
 
     def random_multiscale_fit(self, bounds, n_steps_final, n_steps_ini, max_freq_ini, min_freq_ini,
-                              fit_params, n_ini=10,  patience_final=None, n_edges=None, save_path=None):
+                              fit_params, n_ini=10,  patience_final=None, n_edges=None, save_path=None,
+                              min_angle=np.pi/8, max_angle=7*np.pi/8, min_length=1, min_dist=0.5):
         """
         Optimize shape using randomized initializations. Execute a few steps of optimization for each
         initialization, then refine the best initialization.
@@ -446,10 +448,17 @@ class ShapeOptimizer:
             if save_path is not None:  # contains base path
                 fit_params["save_path"] = save_path.split(".json")[0] + "_{}.json".format(curr_ini)
             print("Initialization number: ", curr_ini)
+            
             vertices = random_poly(bounds, n_edges, in_constraints=in_constraints,
-                                   min_angle=np.pi/8, max_angle=7*np.pi/8, min_length=1, min_dist=0.5).vertices
+                                   min_angle=min_angle, max_angle=max_angle, min_length=min_length, min_dist=min_dist)
+            
+            if len(vertices) == 0:
+                print("Random polygon generation stopped after {} tries".format(max_tries))
+                exit(-1)
+
             success = self.update_sim(vertices, update_adjoint=False, update_state=False)
-            print("polyshape" , vertices.shape)
+
+            print("Vertices: \n", vertices)
             if not success:
                 print("Initialization failed at start, trying again", flush=True)
                 continue
@@ -516,7 +525,7 @@ class ShapeOptimizer:
             tini1 = time.time()
             print("Initialization number: ", curr_ini)
             vertices = random_poly(bounds, n_edges, in_constraints=in_constraints,
-                                   min_angle=np.pi/8, max_angle=7*np.pi/8, min_length=1, min_dist=0.5, max_tries=max_tries).vertices
+                                   min_angle=np.pi/8, max_angle=7*np.pi/8, min_length=1, min_dist=0.5, max_tries=max_tries)
             if len(vertices) == 0:
                 print("Random polygon generation stopped after {} tries".format(max_tries))
                 exit(-1)

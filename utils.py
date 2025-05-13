@@ -218,6 +218,7 @@ class Polygon:
 
     def update_vertices(self, new_vert, sort=False, bounds=None, check_in=None, convex_proj=False, update_origin=False,
                         min_length=None, max_angle=None):
+
         if bounds is not None:
             if not np.all((bounds[0] < new_vert) & (new_vert < bounds[1])):
                 return False 
@@ -232,10 +233,12 @@ class Polygon:
                 indmin = np.argmin(self.lengths)
                 v1, v2 = self.vertices[indmin], self.vertices[(indmin + 1) % self.nedges]
                 vmid = (v1 + v2) / 2.
-                self.vertices[indmin] = vmid 
-                self.vertices = np.concatenate([self.vertices[:indmin+1], self.vertices[indmin+2:]], axis=0)
+                self.vertices[(indmin + 1) % self.nedges] = vmid 
+                self.vertices = np.concatenate([self.vertices[:indmin], self.vertices[indmin+1:]], axis=0)
                 self._update_edges()
+
         self._update_angles()
+
         if max_angle is not None:
             while np.max(self.angles) > max_angle and self.nedges >= 3:
                 indmax = np.argmax(self.angles)
@@ -372,9 +375,9 @@ def random_poly(bounds, nvertices, in_constraints=None, min_length=None, min_ang
                 continue
             if in_constraints is not None:
                 if np.all(poly.is_in(in_constraints, min_dist=min_dist)):
-                    return poly
+                    return vertices
             else:
-                return poly
+                return vertices
     # reached maximal number of tries, abort
     return np.array([])
 

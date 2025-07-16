@@ -234,9 +234,9 @@ class Simulation:
 
         # source contribution
         b = - np.reshape(self._boundary_operator_efficient_src(ind, adjoint=adjoint), [-1, 1])
-
+        
         try:
-            res = np.linalg.lstsq(A, b, rcond=-1)[0]
+            res = np.linalg.lstsq(A, b, rcond=None)[0]
         except:
             print("solve error, freq:", 343 * self.wave_numbers[ind] / np.pi / 2, flush=True)
             exit(1)

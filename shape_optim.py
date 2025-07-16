@@ -5,6 +5,7 @@ from utils import random_poly, dict_to_json
 
 
 def cost_check_stop(log, patience, tol):
+    """Stopping criterion on the value of the cost function."""
     if len(log["cost"]) > patience:
         if np.abs((log["cost"][-1] - log["cost"][-patience]) / log["cost"][-patience]) < tol:
             return True
@@ -12,7 +13,8 @@ def cost_check_stop(log, patience, tol):
 
 
 def vert_check_stop(log, patience, tol):
-    if len(log["vert"]) > patience and len(log["vert"][-1]) == len(log["vert"][-patience]):
+    """Stopping criterion on the vertices coordinates."""
+    if (len(log["vert"]) > patience) and (len(log["vert"][-1]) == len(log["vert"][-patience])):
         if np.max(np.linalg.norm(np.array(log["vert"][-1]) - np.array(log["vert"][-patience]), axis=1)) < tol:
             return True
     return False
@@ -211,7 +213,6 @@ class ShapeOptimizer:
             schedule = dict(max_freqs=[self.max_freq], min_iter_freq=[min_iter],
                             target_iter_freq=[min_iter], min_freqs=[self.min_freq], step_reset=None)
 
-        print("Schedule: ", schedule)
         schedule["update_ind"] = 0
 
         self._increase_frequency_range(schedule)
@@ -269,10 +270,11 @@ class ShapeOptimizer:
             log["cost"].append(cost)
 
             signals = self.get_signals()
-            log["signals_re"].append(signals.real.tolist()), log["signals_im"].append(signals.imag.tolist())
+            #log["signals_re"].append(signals.real.tolist()), log["signals_im"].append(signals.imag.tolist())
             log["ind_min"].append(int(np.min(self._active_ind))), log["ind_max"].append(int(np.max(self._active_ind)))
 
-            log["grad"].append(grad.tolist()), log["vert"].append(self.sim.poly.vertices.tolist())
+            #log["grad"].append(grad.tolist()), 
+            log["vert"].append(self.sim.poly.vertices.tolist())
 
             log["max_freq"].append(self.max_freq), log["min_freq"].append(self.min_freq)
 
@@ -313,6 +315,7 @@ class ShapeOptimizer:
         return self.sim.poly.vertices, log, cost
 
     def _update_state(self, simulate=True):
+        """Update the state function and the corresponding gradients."""
         if simulate:
             self.sim.simulate(self._active_ind, adjoint=False, verbose=False, reset_ampl=True)
 
@@ -329,6 +332,7 @@ class ShapeOptimizer:
             self.p_grads[end_ind] = self.cornerval_p[1][(i + 1) % self.sim.poly.nedges, :, :]
 
     def _update_adjoint(self):
+        """Update the adjoint state and the corresponding gradients."""
         self.sim.simulate(self._active_ind, adjoint=True, verbose=False)
         self.q_values = self.sim.compute(self.quad_points, self._active_ind, adjoint=True)
 
@@ -350,6 +354,8 @@ class ShapeOptimizer:
 
     def update_sim(self, new_params=None, update_state=True, update_adjoint=True,
                    bounds=(-15, 15), check_in=None, allow_reduce=3, verbose=False):
+        """Update the simulation: new_params is a new set of vertices, update_state and update_adjoint
+        indicate whether the state and adjoint should be updated."""
         if new_params is not None:
             success = self.sim.update_poly(new_params, convex_proj=True, bounds=bounds, check_in=check_in,
                                            min_length=self.min_length, max_angle=self.max_angle)

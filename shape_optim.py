@@ -605,6 +605,3 @@ class ShapeOptimizer:
         res, log, _ = self.fit(**fit_params)
         print("total time: {}, final cost: {}".format(time.time() - tstart, log["cost"][-1]))
         return res, log, log["cost"][-1]  # return the final optimization result
-
-
-# todo: check that the reordering of vertices does not cause unwanted behaviors.

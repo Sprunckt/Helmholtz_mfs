@@ -1,8 +1,7 @@
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import numpy as np
 import matplotlib.pyplot as plt
-from shapely.geometry import Polygon as ShapelyPolygon
-from shapely.geometry import Point as ShapelyPoint
+
 from scipy.integrate import simpson
 from scipy.spatial import ConvexHull
 import json 
@@ -26,31 +25,6 @@ def plot_complex(xx, yy, data, extent, vmin=None, vmax=None):
         fig.colorbar(im, cax=cax)
 
     plt.show()
-
-def out_polygon(points, vertices, min_dist=0.0):
-    """Check if points (shape (npoints, d)) are outside and at a distance superior to min_dist of a (not necessarily
-    convex) polygon given by its vertices (shape (nvertices, d)) in counter-clockwise order, or by a Polygon object.
-    Return an array of bool."""
-    outside = np.zeros(points.shape[0], dtype=bool)
-    if type(vertices) is not Polygon:
-        poly = ShapelyPolygon(vertices)
-    else:
-        poly = vertices
-
-    for i, p in enumerate(points):
-        pp = ShapelyPoint(p)
-        outside[i] = (not poly.contains(pp)) and (poly.distance(pp) > min_dist)
-    return outside
-
-
-def in_polygon(points, vertices):
-    poly = ShapelyPolygon(vertices)
-    inside = np.zeros(points.shape[0], dtype=bool)
-    for i, p in enumerate(points):
-        pp = ShapelyPoint(p)
-        inside[i] = poly.contains(pp)
-    return inside 
-
 
 def plot_boundary(bound, norm_vec, boundv, pos_src):
     plt.plot(bound[:, 0], bound[:, 1], '.-', label='boundary')
@@ -171,7 +145,8 @@ class Polygon:
         self.renormed_edges = self.edges / self.lengths[:, np.newaxis]
         # compute inner angles
         dotprod = np.sum(-np.roll(self.renormed_edges, 1, axis=0) * self.renormed_edges, axis=1)
-        sin_sign = -np.sign(np.cross(-np.roll(self.renormed_edges, 1, axis=0), self.renormed_edges))
+        sin_sign = -np.sign(-np.roll(self.renormed_edges[:, 0],1)*self.renormed_edges[:, 1] + 
+                            np.roll(self.renormed_edges[:, 1],1)*self.renormed_edges[:, 0])
         self.angles = np.arccos(np.clip(dotprod, -1, 1))
         self.angles = mod2pi(np.where(sin_sign < 0, 2 * np.pi - self.angles, self.angles))
         # compute polar angles of each edge with respect to the x-axis assuming origin is a vertex, in [-2, -2+2pi]

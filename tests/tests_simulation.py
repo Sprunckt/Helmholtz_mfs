@@ -75,7 +75,7 @@ class TestSimulation2(unittest.TestCase):
         points = np.stack(points, axis=2).reshape(-1, 2)
         self.ntest = ntest
         self.val_points = self.sim.compute(points)
-        self.val_exact = np.loadtxt("../data/exact_sol_{}_{}_{}.csv".format(0, nmax, ntest), delimiter=",")
+        self.val_exact = np.loadtxt("data/exact_sol_{}_{}_{}.csv".format(0, nmax, ntest), delimiter=",")
 
     def test_real(self):  # check if the approximation is real-valued
         self.assertAlmostEqual(np.linalg.norm(np.imag(self.val_points)), 0., 5)

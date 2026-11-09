@@ -37,7 +37,7 @@ class TestShapeOpt(unittest.TestCase):
         opt = ShapeOptimizer(init_vert, freqmax, nfreq,
                              source_pos=pos_src, mic_pos=mic_pos, measurements=obs, nworkers=1, dx=0.3, n_int=1000,
                              sim_kwargs=dict(min_dist=0.005, error_thresh=1e-5, beta=0.1, add_src=10,
-                                             nsrc_schedule=dict(method='per_wavelength', nsrc=np.array([30]))))
+                                             nsrc_schedule=dict(method='per_wavelength', nsrc=30)))
         hh = 1e-5  # step for finite differences
         for i in range(ntest):  # move vertex 2 in the direction of v
             print("i = ", i)
@@ -103,7 +103,7 @@ class TestShapeOpt2(unittest.TestCase):
         opt = ShapeOptimizer(vert, 512, 4,
                              source_pos=pos_src, mic_pos=mic_pos, measurements=obs, nworkers=1, dx=0.3, n_int=1500,
                              sim_kwargs=dict(min_dist=0.005, error_thresh=1e-5, beta=0.1, add_src=10,
-                                             nsrc_schedule=dict(method='per_wavelength', nsrc=np.array([30]))))
+                                             nsrc_schedule=dict(method='per_wavelength', nsrc=30)))
         print("poly: ", vert)
         h = 1e-6
         # check the gradient at each vertex

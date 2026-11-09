@@ -10,7 +10,7 @@ from joblib import Parallel, delayed
 class Simulation:
     def __init__(self, vertices: np.ndarray, fs: float, nfreq: int, dx: float, pos_src: np.ndarray, mic_pos: np.ndarray,
                  observations=None, add_src=15, nsrc_schedule=None, min_dist=0.01, error_thresh=0.05, sep_red=0.8,
-                 src_ampl=None, beta: complex | float | np.ndarray = 0.1, 
+                 src_ampl=None, beta: float | np.ndarray = 0.1, 
                  origin=None, vmin_dist=0, nworkers=1, simulate=False, max_tries=5):
         """
         Simulation class for Helmholtz equation: simulate a source at pos_src in a polygonal domain with boundary
@@ -39,9 +39,8 @@ class Simulation:
         self.src_pos = np.reshape(pos_src, [-1, 2])
         self.vmin_dist = vmin_dist
 
-        # same beta for every wall
-        if isinstance(beta, float) or isinstance(beta, complex):  
-            beta = np.full(len(vertices), beta, dtype='complex')
+        if isinstance(beta, float):  # same beta for every wall
+            beta = np.full(len(vertices), beta)
 
         self.beta: np.ndarray = beta
         self.beta_adj: np.ndarray = -beta  # beta coefficients for state and adjoint
@@ -164,8 +163,8 @@ class Simulation:
             
             # if the number of vertices change: handle betas as if it was constant
             if self.poly.nedges != nvert_old:
-                self.beta = np.full(self.poly.nedges, self.beta[0], dtype='complex')
-                self.beta_adj = np.full(self.poly.nedges, self.beta_adj[0], dtype='complex')
+                self.beta = np.full(self.poly.nedges, self.beta[0])
+                self.beta_adj = np.full(self.poly.nedges, self.beta_adj[0])
 
         else:
             print("Failure to update the polygon", flush=True)

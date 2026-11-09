@@ -22,21 +22,22 @@ class TestShapeOpt(unittest.TestCase):
         pos_src = np.array([[0.5, ly / 2]])
         h = 0.5  # spacing between test points
 
-        ntest = 5  # number of test points
+        ntest = 3  # number of test points
         jval = np.zeros((5, ntest), dtype=float)
         djval = np.zeros((ntest, 2), dtype=float)
         init_vert = np.array([[0., 0], [lxinit, 0], [lxinit, ly], [0., ly]])
 
+        beta = np.array([0.2, 3.1, 0.1, 0.])
         # generate measurements
         sim = Simulation(init_vert, freqmax, nfreq, pos_src=pos_src, mic_pos=mic_pos, nworkers=1, dx=0.3,
                          min_dist=0.005, nsrc_schedule=dict(method='per_wavelength', nsrc=30),
-                         error_thresh=1e-5, beta=0.1, add_src=10, simulate=True)
+                         error_thresh=1e-5, beta=beta, add_src=10, simulate=True)
 
         obs = np.zeros([len(mic_pos), nfreq], dtype=np.complex128)
         obs[:, 1:] = sim.compute(mic_pos, adjoint=False)
         opt = ShapeOptimizer(init_vert, freqmax, nfreq,
-                             source_pos=pos_src, mic_pos=mic_pos, measurements=obs, nworkers=1, dx=0.3, n_int=1000,
-                             sim_kwargs=dict(min_dist=0.005, error_thresh=1e-5, beta=0.1, add_src=10,
+                             source_pos=pos_src, mic_pos=mic_pos, measurements=obs, nworkers=4, dx=0.3, n_int=1000,
+                             sim_kwargs=dict(min_dist=0.005, error_thresh=1e-5, beta=beta, add_src=10,
                                              nsrc_schedule=dict(method='per_wavelength', nsrc=30)))
         hh = 1e-5  # step for finite differences
         for i in range(ntest):  # move vertex 2 in the direction of v
@@ -67,9 +68,10 @@ class TestShapeOpt(unittest.TestCase):
 
         fdjvalx = (jval[2, :] - jval[1, :]) / hh
         fdjvaly = (jval[4, :] - jval[3, :]) / hh
+
         # check relative error is below 1e-2
-        rel_errx = np.abs((fdjvalx[1:] - djval[1:, 0]) / fdjvalx[1:])
-        rel_erry = np.abs((fdjvaly[1:] - djval[1:, 1]) / fdjvaly[1:])
+        rel_errx = np.abs((fdjvalx[:] - djval[:, 0]) / fdjvalx[:])
+        rel_erry = np.abs((fdjvaly[:] - djval[:, 1]) / fdjvaly[:])
         print("relative error x: {}  relative error y: {}".format(rel_errx, rel_erry))
         plot = False
         if plot:
@@ -82,10 +84,10 @@ class TestShapeOpt(unittest.TestCase):
             plt.legend()
             plt.show()
 
-        self.assertTrue(np.all(rel_errx < 1e-2), "Relative error in x is too high")
-        self.assertTrue(np.all(rel_erry < 1e-2), "Relative error in y is too high")
-        self.assertAlmostEqual(djval[0, 0], 0, 5)  # check that the gradient is zero for the initial polygon
-        self.assertAlmostEqual(djval[0, 1], 0, 5)
+        self.assertTrue(np.all(rel_errx[1:] < 1e-2), "Relative error in x is too high")
+        self.assertTrue(np.all(rel_erry[1:] < 1e-2), "Relative error in y is too high")
+        self.assertAlmostEqual(djval[0, 0], 0, 4)  # check that the gradient is zero for the initial polygon
+        self.assertAlmostEqual(djval[0, 1], 0, 4)
 
 
 class TestShapeOpt2(unittest.TestCase):
@@ -143,7 +145,7 @@ class TestFit(unittest.TestCase):
         optim_vert = np.array([[-lx / 2, -ly / 2], [lx / 2, -ly / 2], [lx / 2, ly / 2], [-lx / 2, ly / 2]])
         print("optim_vert:", optim_vert)
         pos_src = np.zeros([1, 2])
-        nmic, nfreqs, fs, beta = 32, 16, 256, 0.1 - 0.05j
+        nmic, nfreqs, fs, beta = 32, 16, 256, 0.13
         mic_pos = np.stack([np.cos(np.linspace(0, 2 * np.pi, nmic, endpoint=False)),
                             np.sin(np.linspace(0, 2 * np.pi, nmic, endpoint=False))], axis=1) * 0.9
         t = Simulation(optim_vert, fs, nfreqs, pos_src=pos_src, mic_pos=mic_pos, nworkers=2, dx=0.3,

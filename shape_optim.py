@@ -382,9 +382,8 @@ class ShapeOptimizer:
             self.q_grads[start_ind] = cornerval_q[1][i, :, :]
             self.q_grads[end_ind] = cornerval_q[1][(i + 1) % self.sim.poly.nedges, :, :]
 
-            # dn p * q.conj
-            self.corner_values[i] = np.real(cornerval_q[0][i].conj() * np.sum(self.cornerval_p[1][i, :, :] *
-                                                                              self.sim.poly.normals[i - 1], axis=-1))
+            self.corner_values[i] = np.real(1j * self.sim.wave_numbers[np.newaxis, self._active_ind] *
+                                            cornerval_q[0][i].conj()*self.cornerval_p[0][i])
 
     def update_sim(self, new_params=None, update_state=True, update_adjoint=True,
                    bounds=(-15, 15), check_in=None, allow_reduce=3, verbose=False):
@@ -422,17 +421,14 @@ class ShapeOptimizer:
             p_val, q_val = self.p_values[quad_ids], self.q_values[quad_ids]
             p_grad, q_grad = self.p_grads[quad_ids], self.q_grads[quad_ids]
             normal = normals[j]
-            vals = (np.sum(np.real(p_grad * q_grad.conj()), axis=(1, 2)) -
-                    np.sum(np.real(self.sim.wave_numbers[np.newaxis, self._active_ind]**2 * p_val * q_val.conj()),
-                           axis=1) +
-                    2 * np.sum(np.real(self.sim.beta * np.conj(self.sim.beta)) *
-                               self.sim.wave_numbers[np.newaxis, self._active_ind]**2 *
-                               np.real(p_val * q_val.conj()), axis=1))*psi[j]
+            vals = (np.sum(np.real(p_grad * q_grad.conj()), axis=(1, 2)) +
+                    np.sum(self.sim.wave_numbers[np.newaxis, self._active_ind]**2 * (2*self.sim.beta[ind[j]]**2 - 1) *
+                           np.real(p_val * q_val.conj()),
+                           axis=1))*psi[j]
             res = res + normal*self.sim.poly.integrate_edge(vals, self.quad_nodes[quad_ids], ind[j])
         renormed_edge1 = self.sim.poly.edges[i] / np.linalg.norm(self.sim.poly.edges[i])
         renormed_edge2 = self.sim.poly.edges[i-1] / np.linalg.norm(self.sim.poly.edges[i-1])
-
-        res = res + (renormed_edge1 - renormed_edge2)*np.sum(np.real(self.corner_values[i, :]))
+        res = res + (renormed_edge2*self.sim.beta[i-1] - renormed_edge1*self.sim.beta[i])*np.sum(self.corner_values[i, :])
         return res / self.nmics / self._nactive
 
     def cost_fun(self):

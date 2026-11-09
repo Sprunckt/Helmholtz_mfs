@@ -10,7 +10,8 @@ from joblib import Parallel, delayed
 class Simulation:
     def __init__(self, vertices: np.ndarray, fs: float, nfreq: int, dx: float, pos_src: np.ndarray, mic_pos: np.ndarray,
                  observations=None, add_src=15, nsrc_schedule=None, min_dist=0.01, error_thresh=0.05, sep_red=0.8,
-                 src_ampl=None, beta=0.1, origin=None, vmin_dist=0, nworkers=1, simulate=False, max_tries=5):
+                 src_ampl=None, beta: complex | float | np.ndarray = 0.1, 
+                 origin=None, vmin_dist=0, nworkers=1, simulate=False, max_tries=5):
         """
         Simulation class for Helmholtz equation: simulate a source at pos_src in a polygonal domain with boundary
         conditions at different frequencies. Can generate time-domain signals by applying an inverse Fourier transform.
@@ -38,7 +39,13 @@ class Simulation:
         self.src_pos = np.reshape(pos_src, [-1, 2])
         self.vmin_dist = vmin_dist
 
-        self.beta, self.beta_adj = beta, -beta  # beta coefficient for state and adjoint
+        # same beta for every wall
+        if isinstance(beta, float) or isinstance(beta, complex):  
+            beta = np.full(len(vertices), beta, dtype='complex')
+
+        self.beta: np.ndarray = beta
+        self.beta_adj: np.ndarray = -beta  # beta coefficients for state and adjoint
+
         self.fs, self.dx = fs, dx   # maximal frequency and distance between real and virtual boundaries
 
         self.poly = Polygon(vertices, origin=origin)
@@ -141,6 +148,7 @@ class Simulation:
 
     def update_poly(self, new_vert, bounds=None, check_in=None, convex_proj=False, min_length=None, max_angle=None,
                     increase_factor=1.1):
+        nvert_old = self.poly.nedges
         success = self.poly.update_vertices(new_vert, bounds=bounds, check_in=check_in, convex_proj=convex_proj,
                                             update_origin=True, min_length=min_length, max_angle=max_angle)
 
@@ -153,6 +161,12 @@ class Simulation:
             self.factor = np.pi / self.poly.angles[None, :]  # angular factor for particular solutions
             self.ampl = np.zeros([self.get_nvirt(), self.nfreqs], dtype=complex)
             self.ampl_adj = np.zeros([self.get_nvirt(), self.nfreqs], dtype=complex)
+            
+            # if the number of vertices change: handle betas as if it was constant
+            if self.poly.nedges != nvert_old:
+                self.beta = np.full(self.poly.nedges, self.beta[0], dtype='complex')
+                self.beta_adj = np.full(self.poly.nedges, self.beta_adj[0], dtype='complex')
+
         else:
             print("Failure to update the polygon", flush=True)
         return success
@@ -386,16 +400,18 @@ class Simulation:
             beta, ampl = self.beta_adj, self.ampl_adj[:, ind]
         else:
             beta, ampl = self.beta, self.ampl[:, ind]
+
+        beta_loc = beta[bound.bound_ids, None]
         res = np.zeros((len(bound), self.get_nvirt()), dtype=complex)  # (nbound, nvbound + nedges*add_src)
         res[:, :len(self.vbound)] = robin_operator(bound.bound, bound.normvec, ampl[:len(self.vbound)],
-                                                   self.vbound.bound, k, beta)  # virtual sources contributions,
+                                                   self.vbound.bound, k, beta_loc)  # virtual sources contributions,
 
         angles, _, norms = self.poly.compute_angles(bound.bound)
         indstart, indstop = len(self.vbound),  len(self.vbound) + self.poly.nedges
         for t in range(self.add_src):  # particular solutions contributions
             grad = particular_solution_gradient(norms, angles, k, t * self.factor,
                                                 self.poly.polar_angles)  # (np, nvertices, 2)
-            res[:, indstart:indstop] = ((np.sum(grad * bound.normvec[:, None, :], axis=-1) + beta *  # (np, nvertices, )
+            res[:, indstart:indstop] = ((np.sum(grad * bound.normvec[:, None, :], axis=-1) + beta_loc *  # (np, nvertices, )
                                          k * 1j * particular_solution(norms, angles, k, t * self.factor)) *
                                         ampl[indstart:indstop].reshape(1, -1))
             indstart, indstop = indstop, indstop + self.poly.nedges
@@ -411,17 +427,17 @@ class Simulation:
             beta, ampl = self.beta_adj, self.ampl_adj[:, ind]
         else:
             beta, ampl = self.beta, self.ampl[:, ind]
-
+        beta_loc = beta[self.room_bound.bound_ids, None]
         res = np.zeros((self.get_nbound(), self.get_nvirt()), dtype=complex)  # (nbound, nvbound + nedges*add_src)
         res[:, :len(self.vbound)] = robin_operator_efficient(self.room_bound.normvec, self._diffs, self._norms,
-                                                             ampl[:len(self.vbound)], k, beta)
+                                                             ampl[:len(self.vbound)], k, beta_loc)
 
         indstart, indstop = len(self.vbound), len(self.vbound) + self.poly.nedges
         for t in range(self.add_src):  # particular solutions contributions
             grad = particular_solution_gradient(self._norms_part, self._angles_part, k, t * self.factor,
                                                 self.poly.polar_angles)  # (np, nvertices, 2)
             res[:, indstart:indstop] = ((np.sum(grad * self.room_bound.normvec[:, None, :], axis=-1) +  # np, nvertices
-                                         beta * k * 1j * particular_solution(self._norms_part, self._angles_part,
+                                         beta_loc * k * 1j * particular_solution(self._norms_part, self._angles_part,
                                                                              k, t * self.factor)) *
                                         ampl[indstart:indstop].reshape(1, -1))
             indstart, indstop = indstop, indstop + self.poly.nedges
@@ -434,9 +450,10 @@ class Simulation:
             beta, src_pos, ampl = self.beta_adj, self.mic_pos, self.src_ampl_adj[:, ind]
         else:
             beta, src_pos, ampl = self.beta, self.src_pos, self.src_ampl[:, ind]
-
+        beta_loc = beta[bound.bound_ids, None]
+        
         return np.squeeze(np.sum(robin_operator(bound.bound, bound.normvec, ampl, src_pos.reshape((-1, 2)),
-                                                self.wave_numbers[ind], beta), axis=1))
+                                                self.wave_numbers[ind], beta_loc), axis=1))
 
     def _boundary_operator_efficient_src(self, ind, adjoint=False):
         """Compute the Robin operator at room_bound for the source term, using precomputed values for the differences
@@ -446,9 +463,10 @@ class Simulation:
             beta, ampl = self.beta_adj, self.src_ampl_adj[:, ind]
         else:
             beta, ampl = self.beta, self.src_ampl[:, ind]
+        beta_loc = beta[self.room_bound.bound_ids, None]
 
         return np.squeeze(np.sum(robin_operator_efficient(self.room_bound.normvec, self._diffs_src, self._norms_src,
-                                                          ampl, k, beta), axis=1))
+                                                          ampl, k, beta_loc), axis=1))
 
     def _precompute_diffs(self, p1, p2):
         """Precompute the differences, norms and angles between p1 and p2 (p2 refers to sources). The angles are
